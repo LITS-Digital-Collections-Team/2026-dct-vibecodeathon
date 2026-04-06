@@ -3,6 +3,13 @@ Repository for scripts and other useful (or useful-ish) output from the Digital 
 
 This repository contains scripts, small tools, metadata patches, notebooks, and example outputs produced by DCT staff and/or relevant to our daily work. Items are provided as working prototypes and convenience utilities to accelerate experimentation, reproducibility, and team development.
 
+## Contents
+
+| Folder | Description |
+|---|---|
+| [`spectator-ocr-clean/`](spectator-ocr-clean/) | A dependency-free Python script (`spectator-ocr-clean.py`) for cleaning ABBYY OCR plain-text output from scanned columnar newspapers. It strips gutter artifacts, removes noise lines, resolves hyphenated line-breaks, and reassembles wrapped paragraphs, writing cleaned files and a per-file TSV log to an output directory. |
+| [`spectator-ner-extract/`](spectator-ner-extract/) | A two-script toolkit for extracting named entities (people, organizations/events, and places) from cleaned OCR text of the Hamilton College Spectator and similar student newspapers, using spaCy NER with heuristic filtering and reconciliation rules. Includes a single-pass extractor and a chunked batch extractor with JSON checkpointing, both producing deduplicated CSVs with date ranges. A sample of cleaned OCR files for testing is in `test-data/`. |
+
 ## Who this is for
 
 - DCT staff, developers, and collaborators who want to reproduce, adapt, or extend sprint artifacts.
