@@ -1,7 +1,7 @@
 # 2026 DCT Vibecodeathon and AI & Tool Dev Sprint
-Repository for scripts and other useful (or useful-ish) output from the DCT's 2026 AI sprint.
+Repository for scripts and other useful (or useful-ish) output from the Digital Collections Team (DCT) 2026 AI & Tool Development Sprint.
 
-This repository contains scripts, small tools, metadata patches, notebooks, and example outputs produced during the Digital Collections Team (DCT) 2026 AI & Tool Development Sprint. Items are provided as working prototypes and convenience utilities to accelerate experimentation, reproducibility, and team development.
+This repository contains scripts, small tools, metadata patches, notebooks, and example outputs produced by DCT staff and/or relevant to our daily work. Items are provided as working prototypes and convenience utilities to accelerate experimentation, reproducibility, and team development.
 
 ## Who this is for
 
