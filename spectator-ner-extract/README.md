@@ -15,9 +15,6 @@ This folder contains two scripts:
   subcommand merges checkpoints into the same three CSV outputs (useful for
   large corpora and long-running jobs).
 
-There is a `test-data/` directory with a small sample of cleaned OCR files for
-quick local testing.
-
 Requirements
 ------------
 - Python 3.8 or newer
