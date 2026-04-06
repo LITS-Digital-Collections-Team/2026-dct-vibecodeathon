@@ -1,40 +1,37 @@
 #!/usr/bin/env python3
 """
-spectator-ocr-clean.py — Clean OCR text files from scanned newspaper archives.
+ocr_clean.py — Clean OCR text files from scanned newspaper archives.
 
 Designed for ABBYY-generated OCR from columnar newspaper text (e.g., the
 Hamilton College Spectator, 1947–1980).
 
 What this script does:
-    1. Strips leading OCR artifacts from each line (stray underscores, pipes,
-         dashes, etc. that appear when the OCR engine reads column gutters).
-    2. Removes noise lines — very short or mostly-symbolic lines that are
-         OCR garbage from mastheads, horizontal rules, and column decorations.
-    3. Resolves hyphenated line breaks: words split across column lines
-         (e.g., "repor-\n ted") are rejoined into single words ("reported").
-    4. Joins wrapped column lines into natural paragraphs — narrow newspaper
-         columns produce many artificial line breaks that this step removes.
-    5. Writes cleaned files to a separate output directory (originals untouched).
-    6. Writes a tab-separated log file recording what changed in each file.
+  1. Strips leading OCR artifacts from each line (stray underscores, pipes,
+     dashes, etc. that appear when the OCR engine reads column gutters).
+  2. Removes noise lines — very short or mostly-symbolic lines that are
+     OCR garbage from mastheads, horizontal rules, and column decorations.
+  3. Resolves hyphenated line breaks: words split across column lines
+     (e.g., "repor-\nted") are rejoined into single words ("reported").
+  4. Joins wrapped column lines into natural paragraphs — narrow newspaper
+     columns produce many artificial line breaks that this step removes.
+  5. Writes cleaned files to a separate output directory (originals untouched).
+  6. Writes a tab-separated log file recording what changed in each file.
 
 Limitations:
-    - Column-crossing artifacts (text from two adjacent columns interleaved)
-        cannot be fully corrected without layout analysis; this script will
-        improve but not eliminate them.
-    - The noise-detection heuristics are tuned for 20th-century English
-        newspaper text. Adjust MIN_WORD_LENGTH / MIN_ALPHA_RATIO below if you
-        find too much (or too little) being removed.
+  - Column-crossing artefacts (text from two adjacent columns interleaved)
+    cannot be fully corrected without layout analysis; this script will
+    improve but not eliminate them.
+  - The noise-detection heuristics are tuned for 20th-century English
+    newspaper text. Adjust MIN_WORD_LENGTH / MIN_ALPHA_RATIO below if you
+    find too much (or too little) being removed.
 
 Usage:
-    python3 spectator-ocr-clean.py --input INPUT_DIR --output OUTPUT_DIR [--log LOG_FILE]
+  python3 ocr_clean.py --input INPUT_DIR --output OUTPUT_DIR [--log LOG_FILE]
 
-    Example:
-        python3 spectator-ocr-clean.py \\
-                --input  ~/Code/archives-as-data/spectator/ocr \\
-                --output ~/Code/archives-as-data/spectator/ocr_cleaned
-
-Note: See README.md in this directory for license, attribution, and an
-explicit disclaimer regarding AI-assisted composition of the code.
+  Example:
+    python3 ocr_clean.py \\
+        --input  ~/Code/archives-as-data/spectator/ocr \\
+        --output ~/Code/archives-as-data/spectator/ocr_cleaned
 
 Requirements: Python 3.6+, standard library only (no pip installs needed).
 """
@@ -342,18 +339,12 @@ def process_directory(input_dir: Path, output_dir: Path, log_path: Path):
 # ── CLI entry point ───────────────────────────────────────────────────────────
 
 def main():
-    """CLI entry point: parse command-line arguments and run the cleaner.
-
-    This function parses the command-line options and dispatches to
-    :func:`process_directory`. See README.md for examples, license,
-    and an AI-composition disclaimer.
-    """
     parser = argparse.ArgumentParser(
         description='Clean ABBYY OCR text files from scanned newspaper archives.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Example:\n"
-            "  python3 spectator-ocr-clean.py \\\n"
+            "  python3 ocr_clean.py \\\n"
             "      --input  ~/Code/archives-as-data/spectator/ocr \\\n"
             "      --output ~/Code/archives-as-data/spectator/ocr_cleaned\n"
         ),

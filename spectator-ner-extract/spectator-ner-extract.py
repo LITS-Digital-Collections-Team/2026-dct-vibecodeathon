@@ -526,10 +526,19 @@ def classify_person_entity(text: str):
 
 def process_file(filepath: Path, nlp) -> dict:
     """
-    Run NER on a single file.  Returns a dict with keys:
+    Run NER on a single file, reading it from disk.
+
+    Returns a dict with keys:
         'people'  → set of accepted person name strings
         'orgs'    → set of org/event name strings
-        'places'  → set of place name strings (pre-LCSH)
+        'places'  → set of place name strings (LCSH standardisation is applied
+                    by EntityStore.add_place() at the call site, not here)
+
+    Note: this function processes one document at a time and is provided for
+    single-file or interactive use.  The main() batch loop does NOT call
+    process_file(); instead it pre-reads all files and passes them to
+    nlp.pipe() for efficient parallel batched processing.  Both code paths
+    use identical entity-extraction and reconciliation logic.
     """
     text = filepath.read_text(encoding='utf-8', errors='replace')
     doc  = nlp(text)
@@ -706,8 +715,11 @@ def main():
             file_texts.append('')
             file_metas.append((fp.name, None))
 
-    # Process in a single pass with nlp.pipe(), using all available CPU cores.
-    # n_process=-1 uses os.cpu_count(); batch_size controls chunk size per worker.
+    # Process all documents in a single nlp.pipe() call rather than invoking
+    # process_file() in a loop.  nlp.pipe() batches the NLP work across multiple
+    # documents and distributes it across parallel worker processes.
+    # n_proc is capped at 4 to avoid memory pressure on typical machines;
+    # raise the cap if you have more RAM and cores available.
     import os
     n_proc = min(4, os.cpu_count() or 1)
     for i, (doc, (filename, date)) in enumerate(

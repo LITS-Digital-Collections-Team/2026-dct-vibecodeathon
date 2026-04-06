@@ -1,118 +1,250 @@
 # spectator-ner-extract
 
-A small toolkit for extracting named entities from cleaned OCR text of the
-Hamilton College Spectator (1947–1981) and similar student newspapers.
+A three-script toolkit for extracting and cleaning named entities from cleaned OCR
+text of the Hamilton College Spectator (1947–1981) and similar newspaper corpora.
 
-This folder contains two scripts:
+## Scripts in this folder
 
-- `spectator-ner-extract.py` — single-pass extractor that reads cleaned `.txt`
-  files, runs spaCy NER, applies heuristic filtering and reconciliation rules,
-  and writes three CSVs: `entities_people.csv`,
-  `entities_orgs_events.csv`, and `entities_places.csv`.
+| Script | Role in pipeline |
+|--------|-----------------|
+| `spectator-ner-extract.py` | **Step 1 (single-pass)** — reads all cleaned `.txt` files, runs spaCy NER, applies heuristic filters, and writes three entity CSVs in one pass. Best for corpora ≤ ~2,000 files. |
+| `spectator-ner-batch.py` | **Step 1 (batch)** — same extraction logic but processes files in configurable index slices, saving a JSON checkpoint per slice. A separate `combine` subcommand merges all checkpoints into the three CSVs. Use for large corpora or when runs may be interrupted. |
+| `spectator-reconcile-people.py` | **Step 2** — post-processes `entities_people.csv`: removes mis-classified place names, then deduplicates OCR name variants across 30+ years of scanned text using phonetic blocking, first-name expansion, and fuzzy matching. |
 
-- `spectator-ner-batch.py` — chunked extractor that processes files in
-  configurable chunks and writes JSON checkpoints. A separate `combine`
-  subcommand merges checkpoints into the same three CSV outputs (useful for
-  large corpora and long-running jobs).
+There is a `test-data/` directory containing a small sample of cleaned OCR files for quick local testing.
 
-Requirements
-------------
-- Python 3.8 or newer
-- spaCy 3.x
-- A spaCy model (recommended: `en_core_web_sm` for speed; use `en_core_web_lg`
-  for better results if compute permits)
+---
 
-Install spaCy and a model:
+## Recommended workflows
 
-```bash
-python3 -m pip install "spacy>=3.0" \
-  --break-system-packages
-python3 -m spacy download en_core_web_sm
+### Small corpora (≤ ~2,000 files)
+
+```
+spectator-ocr-clean.py  →  spectator-ner-extract.py  →  spectator-reconcile-people.py
 ```
 
-Usage — single-file extractor
------------------------------
-Run the single-pass extractor to process a directory of cleaned `.txt` files and
-produce CSVs in an output directory:
+### Large or interruptible corpora
 
-```bash
-python3 spectator-ner-extract.py --input /path/to/cleaned_txts --output /path/to/output_csvs
+```
+spectator-ocr-clean.py  →  spectator-ner-batch.py extract  (repeated for each chunk)
+                         →  spectator-ner-batch.py combine
+                         →  spectator-reconcile-people.py
 ```
 
-Usage — chunked batch extractor
-------------------------------
-For very large corpora, use the chunked workflow to checkpoint progress and
-avoid long uninterrupted runs.
+---
 
-1. Extract (single chunk):
+## Requirements
+
+| Dependency | Used by | Install |
+|-----------|---------|---------|
+| Python 3.8+ | all scripts | — |
+| spaCy 3.x | `ner-extract`, `ner-batch` | `pip install spacy --break-system-packages` |
+| spaCy model (`en_core_web_sm` recommended) | `ner-extract`, `ner-batch` | `python3 -m spacy download en_core_web_sm` |
+| rapidfuzz | `reconcile-people` | `pip install rapidfuzz --break-system-packages` |
+
+Using `en_core_web_sm` is ~3× faster than `en_core_web_lg` with comparable NER
+quality on news text. Switch to `lg` if you need higher recall on uncommon names.
+
+---
+
+## Usage
+
+### 1. spectator-ner-extract.py — single-pass extraction
+
+Processes all `.txt` files in `--input` in one run using `nlp.pipe()` with
+parallel workers (up to 4, auto-detected from CPU count).
 
 ```bash
-python3 spectator-ner-batch.py extract --input /path/to/cleaned_txts \
-    --checkpoint /path/to/checkpoints --start 0 --end 300
+python3 spectator-ner-extract.py \
+    --input  /path/to/cleaned_txts \
+    --output /path/to/output_csvs
 ```
 
-Run the `extract` step multiple times with different `--start`/`--end` ranges
-(or script orchestration) to create many `chunk_XXXX_YYYY.json` checkpoint
-files.
+| Flag | Short | Required | Description |
+|------|-------|----------|-------------|
+| `--input` | `-i` | Yes | Directory of cleaned `.txt` files |
+| `--output` | `-o` | Yes | Directory to write CSV output files (created if absent) |
 
-2. Combine checkpoints into final CSVs:
+---
+
+### 2. spectator-ner-batch.py — chunked extraction with checkpointing
+
+**Step 2a — extract one chunk:**
 
 ```bash
-python3 spectator-ner-batch.py combine --checkpoint /path/to/checkpoints --output /path/to/output_csvs
+python3 spectator-ner-batch.py extract \
+    --input      /path/to/cleaned_txts \
+    --checkpoint /path/to/checkpoints \
+    --start 0 --end 300
 ```
 
-Files produced
---------------
-Each combine step writes the following CSV files to the `--output` directory:
-- `entities_people.csv`
-- `entities_orgs_events.csv`
-- `entities_places.csv`
+Run the `extract` subcommand multiple times with non-overlapping `--start`/`--end`
+index ranges to generate a set of `chunk_XXXX_YYYY.json` checkpoint files. Each
+chunk can be run at a different time or on a different machine.
 
-CSV columns: `name, earliest_date, latest_date, files` (files listed as
-semicolon-separated `spec-YYYY-MM-DD_djvu.txt` names).
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--input` | Yes | Directory containing the `.txt` files (sorted alphabetically) |
+| `--checkpoint` | Yes | Directory to write/read checkpoint `.json` files |
+| `--start` | Yes | 0-based start index (inclusive) into the sorted file list |
+| `--end` | Yes | End index (exclusive) |
 
-Behavior and heuristics
------------------------
-- PERSON entities are filtered by heuristic rules: professional titles are
-  retained; courtesy titles (Mr/Ms) are retained only if a matching full
-  name appears elsewhere in the same document; single-token names are dropped.
-- ORG and EVENT entities require an alphabetic leading character and at least
-  one mixed-case word to reduce headline/OCR noise.
-- LOC/GPE entities are filtered to require one or more alphabetic tokens of
-  length ≥3. Place names are mapped to rule-based LCSH forms for local and
-  common international names (no external API calls).
+**Step 2b — combine checkpoints into CSVs:**
 
-Configuration
--------------
-Abridged LCSH place tables are embedded in the scripts; the full tables used
-by `spectator-ner-extract.py` are conservative and tuned for the corpus.
-Adjust title lists (PROFESSIONAL_TITLES, COURTESY_TITLES) and NAME_CONNECTORS
-as needed for other collections.
+```bash
+python3 spectator-ner-batch.py combine \
+    --checkpoint /path/to/checkpoints \
+    --output     /path/to/output_csvs
+```
 
-License
--------
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--checkpoint` | Yes | Directory containing the `chunk_*.json` files |
+| `--output` | Yes | Directory to write the merged CSV files |
+
+---
+
+### 3. spectator-reconcile-people.py — people deduplication
+
+Run after extraction on the resulting `entities_people.csv` and
+`entities_places.csv`:
+
+```bash
+python3 spectator-reconcile-people.py \
+    --people entities_people.csv \
+    --places entities_places.csv \
+    --outdir /path/to/reconciled_output
+```
+
+| Flag | Short | Required | Description |
+|------|-------|----------|-------------|
+| `--people` | `-p` | Yes | Path to `entities_people.csv` from the extraction step |
+| `--places` | `-l` | Yes | Path to `entities_places.csv` from the extraction step |
+| `--outdir` | `-o` | Yes | Directory for reconciled output files |
+
+---
+
+## Output files
+
+### After extraction (ner-extract or ner-batch combine)
+
+| File | Contents |
+|------|----------|
+| `entities_people.csv` | Personal names: one row per unique extracted form |
+| `entities_orgs_events.csv` | Organizations and named events |
+| `entities_places.csv` | Geographic places, LCSH-standardized where possible |
+
+All three files share the same column schema:
+
+| Column | Description |
+|--------|-------------|
+| `name` | Entity text as extracted (normalized) |
+| `earliest_date` | ISO date of first appearance (`YYYY-MM-DD`) |
+| `latest_date` | ISO date of most recent appearance |
+| `files` | Semicolon-separated list of source filenames |
+
+### After reconciliation (reconcile-people)
+
+| File | Contents |
+|------|----------|
+| `entities_people_clean.csv` | Deduplicated people: OCR variants collapsed to a single canonical row, date range and file list merged |
+| `entities_places_augmented.csv` | Original places plus names moved from the people file; moved rows are flagged for manual LCSH review |
+| `reconciliation_report.tsv` | Audit trail: every merge decision with similarity score, block key, and chosen canonical form |
+
+---
+
+## Behavior and heuristics
+
+### Entity extraction (ner-extract and ner-batch)
+
+**People (`PERSON`):**
+- Full first+last forms are kept.
+- Professional/academic titles (Dean, Professor, Coach, Rev., Gen., etc.) + last name are kept.
+- Courtesy titles (Mr./Mrs./Ms.) + last name are kept *only* if a matching first+last form appears elsewhere in the same file (within-document reconciliation).
+- Single-token names, all-caps tokens (OCR headline noise), and names on the blocklist are dropped.
+- Names longer than 5 tokens are rejected as sentence fragments.
+
+**Organizations and events (`ORG`, `EVENT`):**
+- Must begin with an alphabetic character.
+- Must contain at least one capitalized word of three or more letters.
+- Strings with pipe characters or runs of three or more digits are rejected as OCR garbage.
+
+**Places (`GPE`, `LOC`):**
+- Must contain at least one alphabetic word of three or more characters.
+- Extracted forms are mapped to LCSH-standardized headings using a rule-based lookup table of ~200 entries. Unknown places are stored as extracted.
+
+**Multiprocessing:** both extraction scripts use `nlp.pipe()` with `n_process` set to `min(4, cpu_count)` for parallel processing.
+
+### People reconciliation (reconcile-people)
+
+Runs in a two-stage pipeline:
+
+**Stage 1 — Place keyword filter:** names containing words like `dormitory`,
+`auditorium`, or ending in `building` are removed from the people file and
+appended to `entities_places_augmented.csv` for manual LCSH review.
+
+**Stage 2 — OCR name deduplication:**
+1. Names are *comparison-normalised* (used for matching only, not stored):
+   lowercased, OCR digit-for-letter substitutions applied (`8→e`, `0→o`, etc.),
+   leading occupational words stripped (`Headwaiter Alex Cruden` → `alex cruden`),
+   and common nicknames expanded to canonical forms (`bob` → `robert`).
+2. Names are blocked into phonetic groups using `first_initial + Soundex(last_token)`.
+   A secondary key on `Soundex(second_token)` catches concatenation artefacts.
+3. Within each block, prefix matches are always merged; other pairs are merged if
+   their `token_sort_ratio` (rapidfuzz) meets the configured threshold.
+4. A Union-Find structure builds clusters; each cluster is collapsed to the
+   most-attested, best-capitalised, digit-free canonical form.
+5. An audit trail is written to `reconciliation_report.tsv`.
+
+---
+
+## Configuration
+
+### Extraction scripts
+
+| Constant | Default | Effect |
+|----------|---------|--------|
+| `PROFESSIONAL_TITLES` | (set, ~40 entries) | Title + last name forms that are unconditionally kept |
+| `COURTESY_TITLES` | `mr, mrs, miss, ms, mme, mdme` | Title + last forms kept only when reconciled within the document |
+| `NAME_CONNECTORS` | `de, van, von, …` | Lowercase tokens permitted inside multi-part names |
+| `PERSON_BLOCKLIST` | (set) | Phrases that look like names but are not people |
+| `LCSH_PLACES` | (dict, ~200 entries) | Rule-based LCSH authorized-form lookup table |
+
+### Reconciliation script
+
+| Constant | Default | Effect |
+|----------|---------|--------|
+| `FUZZY_THRESHOLD` | `88` | Minimum `token_sort_ratio` score to merge two names |
+| `OCR_DIGIT_THRESHOLD` | `80` | Lower threshold when a name contains an OCR digit artefact |
+| `MAX_BLOCK_SIZE` | `150` | Skip pairwise comparison in phonetic blocks larger than this |
+| `PLACE_KEYWORDS` | (list) | Words that indicate a "person" name is really a place |
+| `LEADING_CONTEXT_WORDS` | (set) | Occupational/descriptive words stripped before comparison |
+| `FIRST_NAME_EXPANSIONS` | (dict, ~60 entries) | Nickname → canonical long-form name mapping |
+
+---
+
+## License
+
 Copyright (C) 2026 Patrick R. Wallace and Hamilton College LITS
 
-This program is free software: you can redistribute it and/or modify it under
-the terms of the GNU General Public License as published by the Free Software
-Foundation, either version 3 of the License, or (at your option) any later
-version.
+This program is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software Foundation,
+either version 3 of the License, or (at your option) any later version.
 
-This program is distributed in the hope that it will be useful, but WITHOUT
-ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details:
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details:
 https://www.gnu.org/licenses/gpl-3.0.en.html
 
-AI-assisted composition disclaimer
----------------------------------
-Parts of this code and accompanying documentation were written with assistance
-from Anthropic Claude Sonnet 4.6. The code may not have been fully reviewed
-for quality, correctness, or security by a human reviewer. Use at your own
-risk and perform your own review before deploying or running on sensitive
-data.
+## AI-assisted composition disclaimer
 
-Attribution & contact
----------------------
+Parts of this code and accompanying documentation were written with assistance from
+Anthropic Claude Sonnet 4.6. The code may not have been fully reviewed for quality,
+correctness, or security by a human reviewer. Use at your own risk and perform your
+own review before deploying or running on sensitive data.
+
+## Attribution & contact
+
 - Author / maintainer: Patrick R. Wallace (Hamilton College LITS)
 - Suggestions, bug reports, and pull requests are welcome.
 
