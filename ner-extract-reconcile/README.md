@@ -23,8 +23,7 @@ ner-extract-reconcile/
     ├── lcnaf_given_names_common.txt ← Frequent LCNAF given-name tokens (≥5 records, 382 KB)
     ├── lcnaf_given_names.txt        ← All LCNAF given-name tokens (2.7 MB)
     ├── lcnaf_surnames.txt           ← All LCNAF surname tokens (12 MB)
-    ├── hamilton-places.txt          ← Campus location whitelist
-    └── campus-table.txt             ← Hamilton College building reference table
+    └── hamilton-places.txt          ← Campus location whitelist
 ```
 
 **Dependencies (all scripts):** Python 3.8+
