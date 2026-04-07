@@ -7,6 +7,7 @@ This repository contains scripts, small tools, metadata patches, notebooks, and 
 
 | Folder | Description |
 |---|---|
+| [`list-places-nearby/`](list-places-nearby/) | A dependency-free CLI utility that produces a plaintext list of GNIS place names within a given radius of a latitude/longitude point, reading directly from the USGS GNIS national text ZIP archive. |
 | [`spectator-ocr-clean/`](spectator-ocr-clean/) | A dependency-free Python script (`spectator-ocr-clean.py`) for cleaning ABBYY OCR plain-text output from scanned columnar newspapers. It strips gutter artifacts, removes noise lines, resolves hyphenated line-breaks, and reassembles wrapped paragraphs, writing cleaned files and a per-file TSV log to an output directory. |
 | [`spectator-ner-extract/`](spectator-ner-extract/) | A two-script toolkit for extracting named entities (people, organizations/events, and places) from cleaned OCR text of the Hamilton College Spectator and similar student newspapers, using spaCy NER with heuristic filtering and reconciliation rules. Includes a single-pass extractor and a chunked batch extractor with JSON checkpointing, both producing deduplicated CSVs with date ranges. |
 
