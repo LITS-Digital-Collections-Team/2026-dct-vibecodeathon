@@ -50,13 +50,13 @@ tesseract --version
 ## Usage
 
 ```powershell
-python surya_ocr.py <input_dir> [--output <dir>] [--logs <dir>] [--engine <surya|tesseract|auto>] [--checkpoint <path>] [--device <cpu|cuda|mps>] [--debug] [--validation-dir <dir>] [--nodry]
+python batch_ocr_to_pdf.py <input_dir> [--output <dir>] [--logs <dir>] [--engine <surya|tesseract|auto>] [--checkpoint <path>] [--device <cpu|cuda|mps>] [--debug] [--validation-dir <dir>] [--nodry]
 ```
 
 ### Example
 
 ```powershell
-python surya_ocr.py "C:\Users\khoffman\Documents\TIFFs" --engine auto --output "C:\Users\khoffman\Documents\PDFs" --debug
+python batch_ocr_to_pdf.py "C:\Users\khoffman\Documents\TIFFs" --engine auto --output "C:\Users\khoffman\Documents\PDFs" --debug
 ```
 
 ## CLI Options
