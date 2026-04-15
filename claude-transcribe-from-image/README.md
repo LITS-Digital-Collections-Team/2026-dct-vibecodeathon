@@ -21,10 +21,10 @@ be flagged.
 
 ## Description
 
-`claude-transcribe-batch.py` processes a directory of scanned images or PDFs
-and writes one plain-text transcription file per input document.  It is
-designed for archival workflows where a large number of manuscript pages need
-to be converted to searchable text quickly, with human review to follow.
+`claude-transcribe-batch.py` processes a single file or a directory of scanned
+images or PDFs and writes one plain-text transcription file per input document.
+It is designed for archival workflows where a large number of manuscript pages
+need to be converted to searchable text quickly, with human review to follow.
 
 ### How it works
 
@@ -106,14 +106,15 @@ changing any logic:
 ## Usage
 
 ```
-python3 claude-transcribe-batch.py --input DIR --output DIR [--overwrite]
+python3 claude-transcribe-batch.py --input PATH --output DIR [--overwrite] [--dry-run]
 ```
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `--input`, `-i` | yes | Directory containing `.jpg`, `.jpeg`, `.png`, `.tiff`, `.tif`, or `.pdf` files |
+| `--input`, `-i` | yes | A single `.jpg`, `.jpeg`, `.png`, `.tiff`, `.tif`, or `.pdf` file, **or** a directory of such files |
 | `--output`, `-o` | yes | Directory to write `.txt` transcription files (created if it does not exist) |
 | `--overwrite` | no | Re-transcribe files that already have a `.txt` output; default is to skip them |
+| `--dry-run` | no | Estimate input token count and cost without calling the API or writing any files |
 
 `--input` and `--output` may point to the same directory.  The `.txt` files
 are ignored during input discovery (only image/PDF extensions are matched), so
@@ -151,6 +152,28 @@ python3 claude-transcribe-batch.py \
     --overwrite
 ```
 
+**Estimate token usage and cost before running (no API calls made):**
+
+```bash
+python3 claude-transcribe-batch.py \
+    --input  ~/projects/yhm-com-bnl-mss_PDFs/ \
+    --output ~/projects/yhm-com-bnl-mss_PDFs/ \
+    --dry-run
+```
+
+```
+DRY RUN — 110 file(s) found. Estimating input tokens (output tokens are not predictable in advance)...
+  yhm-com-bnl-mss-0001.pdf: ~2,618 input tokens
+  yhm-com-bnl-mss-0002.pdf: ~7,568 input tokens
+  ...
+
+Estimated total input tokens : ~285,400
+Estimated input-only cost    : ~$0.8562 USD
+(Output token cost excluded — varies by transcription length.)
+```
+
+Note: the estimate uses Claude's documented formula `(width × height) / 750` per image and may run slightly high.  Output token cost (billed at a higher rate) is not included.
+
 **Sample progress output:**
 
 ```
@@ -163,6 +186,12 @@ Found 110 file(s). Starting transcription...
 [3/110] yhm-com-bnl-mss-0003.pdf
 ...
 Done. Processed: 110  Skipped (already transcribed): 0  Errors: 0
+
+Metrics:
+  Runtime       : 843.2s
+  Input tokens  : 198,450
+  Output tokens : 42,310
+  Est. cost     : $1.2303 USD
 ```
 
 **Sample output file (`yhm-com-bnl-mss-0001.txt`):**

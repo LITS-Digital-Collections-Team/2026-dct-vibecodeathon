@@ -81,6 +81,11 @@ PDF_DPI = 150
 COST_PER_M_INPUT = 3.00
 COST_PER_M_OUTPUT = 15.00
 
+# Estimated text tokens consumed by the system prompt + user prompt per API call.
+# System prompt: ~90 words ≈ 120 tokens; user prompt: ~25 words ≈ 32 tokens.
+# Used only for the --dry-run cost estimate.
+PROMPT_TOKENS_PER_CALL = 150
+
 SYSTEM_PROMPT = (
     "You are an expert transcriptionist specialising in 19th-century English "
     "handwritten documents.  Transcribe the text exactly as written, preserving "
@@ -113,6 +118,53 @@ def resize_and_encode(img: Image.Image) -> str:
     buf = io.BytesIO()
     img.convert("RGB").save(buf, format="JPEG", quality=JPEG_QUALITY)
     return base64.standard_b64encode(buf.getvalue()).decode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Token estimation (used by --dry-run)
+# ---------------------------------------------------------------------------
+
+def estimate_image_tokens(img: Image.Image) -> int:
+    """Estimate input tokens for one image after the resize step.
+
+    Claude bills approximately (width × height) / 750 tokens per image.
+    This function applies the same resize logic as resize_and_encode() so the
+    estimate reflects the actual dimensions that would be sent to the API.
+    Does not include the text-prompt overhead (see PROMPT_TOKENS_PER_CALL).
+    """
+    w, h = img.size
+    if max(w, h) > MAX_SIDE_PX:
+        scale = MAX_SIDE_PX / max(w, h)
+        w, h = int(w * scale), int(h * scale)
+    return max(1, round((w * h) / 750))
+
+
+def dry_run_file(path: Path) -> int:
+    """Return the estimated input-token count for transcribing one file.
+
+    Loads and (for PDFs) rasterises the file exactly as the real run would,
+    then sums per-page image-token estimates plus the fixed prompt overhead.
+    No API calls are made.
+    """
+    if path.suffix.lower() == ".pdf":
+        try:
+            from pdf2image import convert_from_path
+        except ImportError:
+            print(
+                "ERROR: pdf2image is required for PDF support.\n"
+                "  pip install pdf2image\n"
+                "  brew install poppler        (macOS)\n"
+                "  apt install poppler-utils   (Ubuntu/Debian)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        pages = convert_from_path(str(path), dpi=PDF_DPI)
+        tokens = sum(estimate_image_tokens(p) for p in pages)
+        tokens += PROMPT_TOKENS_PER_CALL * len(pages)
+        return tokens
+    else:
+        img = Image.open(path)
+        return estimate_image_tokens(img) + PROMPT_TOKENS_PER_CALL
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +296,10 @@ def main() -> None:
         "--overwrite", action="store_true",
         help="Re-transcribe files that already have a .txt output (default: skip)",
     )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Estimate input tokens and cost without calling the API or writing files",
+    )
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -285,6 +341,31 @@ def main() -> None:
     client = anthropic.Anthropic(api_key=api_key)
 
     total = len(files)
+
+    # --dry-run: estimate token usage and cost without touching the API.
+    if args.dry_run:
+        print(
+            f"DRY RUN — {total} file(s) found. "
+            "Estimating input tokens (output tokens are not predictable in advance)...",
+            file=sys.stderr,
+        )
+        grand_total = 0
+        for path in files:
+            try:
+                est = dry_run_file(path)
+                grand_total += est
+                print(f"  {path.name}: ~{est:,} input tokens", file=sys.stderr)
+            except Exception as exc:
+                print(f"  {path.name}: ERROR — {exc}", file=sys.stderr)
+        cost_est = grand_total / 1_000_000 * COST_PER_M_INPUT
+        print(
+            f"\nEstimated total input tokens : ~{grand_total:,}\n"
+            f"Estimated input-only cost    : ~${cost_est:.4f} USD\n"
+            f"(Output token cost excluded — varies by transcription length.)",
+            file=sys.stderr,
+        )
+        return
+
     print(f"Found {total} file(s). Starting transcription...", file=sys.stderr)
 
     processed = skipped = errors = 0
