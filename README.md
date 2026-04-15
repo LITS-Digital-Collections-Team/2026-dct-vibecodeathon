@@ -13,6 +13,7 @@ This repository contains scripts, small tools, metadata patches, notebooks, and 
 | [`spectator-ner-extract/`](spectator-ner-extract/) | A two-script toolkit for extracting named entities (people, organizations/events, and places) from cleaned OCR text of the Hamilton College Spectator and similar student newspapers, using spaCy NER with heuristic filtering and reconciliation rules. Includes a single-pass extractor and a chunked batch extractor with JSON checkpointing, both producing deduplicated CSVs with date ranges. |
 | [`batch-ocr-to-pdf/`](batch-ocr-to-pdf/) | This script batches TIFF files, applies OCR, and creates searchable PDF output. It supports two OCR engines: Surya (preferred when available); Tesseract (fallback or explicit option); It also supports grouped output based on filename prefixes and optional debug validation PDFs. |
 | [`GPT-extract-place/`](GPT-extract-place/) | Automatically extract geographic place names from a folder of scanned document images (letters, manuscripts, photographs, etc.) using the OpenAI GPT-4o Vision API. Results are written to a CSV with up to three place names per image. Built to address metadata issue with V. Parma Papers. |
+| [`claude-transcribe-from-image/`](claude-transcribe-from-image/) | Batch-transcription of scanned handwritten manuscript images and PDFs using the [Anthropic Claude](https://www.anthropic.com/claude) vision API (`claude-sonnet-4-6`). Compatible with institutional Anthropic accounts. Includes token use and cost estimator + logging. |
 
 ## Who this is for
 
