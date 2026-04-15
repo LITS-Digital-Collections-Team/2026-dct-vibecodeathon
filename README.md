@@ -14,6 +14,7 @@ This repository contains scripts, small tools, metadata patches, notebooks, and 
 | [`batch-ocr-to-pdf/`](batch-ocr-to-pdf/) | This script batches TIFF files, applies OCR, and creates searchable PDF output. It supports two OCR engines: Surya (preferred when available); Tesseract (fallback or explicit option); It also supports grouped output based on filename prefixes and optional debug validation PDFs. |
 | [`GPT-extract-place/`](GPT-extract-place/) | Automatically extract geographic place names from a folder of scanned document images (letters, manuscripts, photographs, etc.) using the OpenAI GPT-4o Vision API. Results are written to a CSV with up to three place names per image. Built to address metadata issue with V. Parma Papers. |
 | [`claude-transcribe-from-image/`](claude-transcribe-from-image/) | Batch-transcription of scanned handwritten manuscript images and PDFs using the [Anthropic Claude](https://www.anthropic.com/claude) vision API (`claude-sonnet-4-6`). Compatible with institutional Anthropic accounts. Includes token use and cost estimator + logging. |
+| [`claude-document-summarizer/`](claude-document-summarizer/) | `claude-summarize.py` reads a single `.txt` transcript file or a directory of such files, generates a neutral descriptive summary of each (suitable for library catalogs and archival finding aids), and writes the result to an output directory. |
 
 ## Who this is for
 
