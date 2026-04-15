@@ -19,15 +19,15 @@ topics, or omit significant passages.
 
 ## Description
 
-`claude-summarize.py` reads `.txt` transcript files from an input directory,
-generates a neutral descriptive summary of each (suitable for library catalogs
-and archival finding aids), and writes the result to a separate output
+`claude-summarize.py` reads a single `.txt` transcript file or a directory of
+such files, generates a neutral descriptive summary of each (suitable for
+library catalogs and archival finding aids), and writes the result to an output
 directory.  It is designed for archival workflows at Hamilton College LITS.
 
 ### How it works
 
-1. Each `.txt` file in the input directory is read and its token length
-   estimated.
+1. Each input `.txt` file is read and its token length estimated.  `--input`
+   may be a single file or a directory.
 2. **Single-pass** (most documents): if the transcript fits within Claude's
    200K-token context window, it is sent in one API call.  This eliminates
    the chunking overhead required by earlier GPT-based tools.
@@ -91,19 +91,21 @@ The following constants at the top of the script can be adjusted:
 ## Usage
 
 ```
-python3 claude-summarize.py --input DIR --output DIR [--overwrite] [--dry-run] [--delay SECONDS]
+python3 claude-summarize.py --input PATH --output DIR [--overwrite] [--dry-run] [--delay SECONDS]
 ```
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `--input`, `-i` | yes | Directory containing `.txt` transcript files |
+| `--input`, `-i` | yes | A single `.txt` file, or a directory of `.txt` transcript files |
 | `--output`, `-o` | yes | Directory to write `.txt` summary files (created if it does not exist) |
 | `--overwrite` | no | Re-summarise files that already have output; default is to skip them |
 | `--dry-run` | no | Count input tokens and estimate cost without summarising (uses the token-counting API; no inference charges) |
 | `--delay SECONDS` | no | Seconds to wait between requests (default: `6`; set to `0` to disable) |
 
-`--input` and `--output` **must be different directories** — both contain
-`.txt` files, so using the same path would overwrite source transcripts.
+When `--input` is a directory, it **must differ from `--output`** — both
+contain `.txt` files, so using the same path would overwrite source
+transcripts with their summaries.  When `--input` is a single file this
+restriction does not apply.
 
 ---
 

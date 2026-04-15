@@ -89,7 +89,9 @@ SYSTEM_PROMPT = (
     "than reproduce it. Summarise in fewer than 300 words, balancing succinctness, "
     "accuracy, readability, and completeness. Identify and name the main topics, "
     "people, organisations, and locations discussed. Never include email addresses, "
-    "phone numbers, or URLs in your output."
+    "phone numbers, or URLs in your output. "
+    "Write in plain prose only: no markdown, no bullet points, no numbered lists, "
+    "no section headings, no bold or italic text."
 )
 
 # User prompt for a document that fits in a single context window.
@@ -274,8 +276,8 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--input", "-i", required=True, metavar="DIR",
-        help="Directory containing .txt transcript files",
+        "--input", "-i", required=True, metavar="PATH",
+        help="A single .txt file, or a directory of .txt transcript files",
     )
     parser.add_argument(
         "--output", "-o", required=True, metavar="DIR",
@@ -298,29 +300,34 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    input_dir = Path(args.input).resolve()
+    input_path = Path(args.input).resolve()
     output_dir = Path(args.output).resolve()
 
-    if not input_dir.is_dir():
-        print(f"ERROR: input directory not found: {input_dir}", file=sys.stderr)
-        sys.exit(1)
-
-    if input_dir == output_dir:
-        print(
-            "ERROR: --input and --output must be different directories.\n"
-            "Both contain .txt files; using the same directory would overwrite "
-            "source transcripts with their summaries.",
-            file=sys.stderr,
+    # Accept either a single .txt file or a directory as --input.
+    if input_path.is_file():
+        if input_path.suffix.lower() != ".txt":
+            print(f"ERROR: input file must be a .txt file: {input_path}", file=sys.stderr)
+            sys.exit(1)
+        files = [input_path]
+    elif input_path.is_dir():
+        if input_path == output_dir:
+            print(
+                "ERROR: --input and --output must be different directories.\n"
+                "Both contain .txt files; using the same directory would overwrite "
+                "source transcripts with their summaries.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        files = sorted(
+            p for p in input_path.iterdir()
+            if p.is_file() and p.suffix.lower() == ".txt"
         )
+    else:
+        print(f"ERROR: input path not found: {input_path}", file=sys.stderr)
         sys.exit(1)
-
-    files = sorted(
-        p for p in input_dir.iterdir()
-        if p.is_file() and p.suffix.lower() == ".txt"
-    )
 
     if not files:
-        print(f"No .txt files found in {input_dir}", file=sys.stderr)
+        print(f"No .txt files found in {input_path}", file=sys.stderr)
         sys.exit(0)
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
