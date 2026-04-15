@@ -2,8 +2,8 @@
 
 Batch-transcription of scanned handwritten manuscript images and PDFs using
 the [Anthropic Claude](https://www.anthropic.com/claude) vision API
-(`claude-sonnet-4-6`).  Developed for the digitisation programme at Hamilton
-College Library, Information & Technology Services (LITS).
+(`claude-sonnet-4-6`).  Developed at Hamilton
+College Library, Information & Technology Services (LITS) for use with institutional Anthropic accounts.
 
 ---
 
