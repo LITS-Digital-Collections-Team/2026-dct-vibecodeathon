@@ -485,9 +485,11 @@ def create_grouped_ocr_pdfs(
         raise ValueError("Unsupported OCR engine. Choose 'surya', 'tesseract', or 'auto'.")
 
     requested_engine = ocr_engine
+    engine_context = None
     if requested_engine == "auto" and SURYA_API is None:
         print("Surya is not available, falling back to Tesseract.")
         ocr_engine = "tesseract"
+        engine_context = {"type": "tesseract"}
 
     ensure_dir(output_dir)
     ensure_dir(log_dir)
@@ -586,7 +588,7 @@ def create_grouped_ocr_pdfs(
 
 if __name__ == "__main__":
     # Example usage:
-    #   python surya_ocr.py C:\path\to\tiffs --engine auto --output C:\path\to\pdfs --debug
+    #   python batch_ocr_to_pdf.py C:\path\to\tiffs --engine auto --output C:\path\to\pdfs --debug
     # This will group TIFF files, run OCR with Surya if available, fall back to Tesseract,
     # create searchable PDFs, and write debug validation PDFs with visible overlays.
     parser = argparse.ArgumentParser(description="Batch OCR TIFF files into grouped PDFs.")
