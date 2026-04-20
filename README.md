@@ -15,6 +15,7 @@ This repository contains scripts, small tools, metadata patches, notebooks, and 
 | [`GPT-extract-place/`](GPT-extract-place/) | Automatically extract geographic place names from a folder of scanned document images (letters, manuscripts, photographs, etc.) using the OpenAI GPT-4o Vision API. Results are written to a CSV with up to three place names per image. Built to address metadata issue with V. Parma Papers. |
 | [`claude-transcribe-from-image/`](claude-transcribe-from-image/) | Batch-transcription of scanned handwritten manuscript images and PDFs using the [Anthropic Claude](https://www.anthropic.com/claude) vision API (`claude-sonnet-4-6`). Compatible with institutional Anthropic accounts. Includes token use and cost estimator + logging. |
 | [`claude-document-summarizer/`](claude-document-summarizer/) | `claude-summarize.py` reads a single `.txt` transcript file or a directory of such files, generates a neutral descriptive summary of each (suitable for library catalogs and archival finding aids), and writes the result to an output directory. |
+| [`claude-wiki/`](claude-wiki/) | AI-powered markdown knowledge base. `claude-wiki` watches one or more source directories for new files and uses [Claude](https://www.anthropic.com/claude) to analyze their content, then writes targeted updates — new notes, cross-references, summaries — to a markdown wiki you own and control. Drop a document in the ingest folder, run the script, and your wiki grows. |
 
 ## Who this is for
 
