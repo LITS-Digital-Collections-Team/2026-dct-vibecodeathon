@@ -1,0 +1,16 @@
+{
+  "wiki_dir": "wiki",
+  "source_dirs": [
+    "ingest",
+    "meeting-notes"
+  ],
+  "model": "claude-opus-4-7",
+  "wiki_description": "a research knowledge base for the Acme Digital Preservation Project",
+  "skip_extensions": ["xlsx", "docx"],
+  "custom_rules": [
+    "Always use ISO 8601 dates (YYYY-MM-DD) in new notes",
+    "Tag notes with relevant project phase: Planning, Active, or Complete",
+    "When referencing external standards, link to their canonical source"
+  ],
+  "max_tokens": 8096
+}
