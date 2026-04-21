@@ -1,0 +1,78 @@
+{
+  "tool_name": "Archipelago Metadata Generator & Enhancer",
+  "version": "1.0.0",
+  "settings": {
+    "output_format": {
+      "encoding": "utf-8",
+      "delimiter": ",",
+      "quoting": "minimal"
+    },
+    "validation": {
+      "strict_mode": false,
+      "check_required_fields": true,
+      "check_field_values": true,
+      "generate_warnings": true
+    },
+    "enhancement": {
+      "fill_defaults": true,
+      "normalize_names": false,
+      "auto_timestamps": false
+    },
+    "geographic": {
+      "nominatim_enabled": true,
+      "nominatim_timeout": 10,
+      "nominatim_user_agent": "archipelago-metadata-generator/1.0"
+    }
+  },
+  "default_values": {
+    "restrictions_on_access": "There are no restrictions on access to this resource.",
+    "language": "en",
+    "type": "object"
+  },
+  "valid_types": [
+    "object",
+    "collection",
+    "image",
+    "sound",
+    "text",
+    "video",
+    "map",
+    "thesis",
+    "publication"
+  ],
+  "valid_languages": [
+    "en", "es", "fr", "de", "it", "pt", "zh", "ja", "ko", "ru", "ar", "hi"
+  ],
+  "field_categories": {
+    "personal_names": {
+      "description": "Role-based personal name fields",
+      "count": 20,
+      "examples": ["personal_name_author", "personal_name_photographer", "personal_name_editor"]
+    },
+    "corporate_names": {
+      "description": "Corporate/organizational entity fields",
+      "count": 5,
+      "examples": ["corporate_name_author", "corporate_name_owner"]
+    },
+    "subjects": {
+      "description": "Subject heading fields",
+      "count": 6,
+      "examples": ["subject_geographic", "subject_topical", "subject_personal_name"]
+    },
+    "file_resources": {
+      "description": "Digital resource file associations",
+      "count": 5,
+      "examples": ["images", "audios", "videos", "documents", "models"]
+    },
+    "descriptive": {
+      "description": "Content description fields",
+      "count": 15,
+      "examples": ["title", "description", "abstract", "note"]
+    },
+    "access_rights": {
+      "description": "Access and rights management",
+      "count": 4,
+      "examples": ["restrictions_on_access", "rights_statements", "physical_location"]
+    }
+  }
+}
