@@ -246,5 +246,12 @@ def schema():
     click.echo(f'  File Resource Fields: {len(METADATA_SCHEMA["file_resource_fields"])}')
 
 
+@cli.command()
+def gui():
+    """Launch the windowed GUI interface"""
+    from gui import main
+    main()
+
+
 if __name__ == '__main__':
     cli()
