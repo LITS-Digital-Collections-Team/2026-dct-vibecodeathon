@@ -583,7 +583,7 @@
                     filepath: currentFile.name,
                     format, enhance, normalize_names: normalizeNames, validate
                 })
-            }))
+            })
             .then(r => r.json())
             .then(data => {
                 hideSpinner('processSpinner');
