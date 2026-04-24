@@ -784,5 +784,5 @@ express or implied.
 **Institution:** Hamilton College Library and Information Technology Services (LITS)  
 **Year:** 2026
 
-Mnemotron Wiki was developed at Hamilton College LITS as a personal
+Mnemotron Wiki was developed by Patrick R. Wallace (Head of Digital Strategies, Hamilton College) as a personal
 knowledge management tool for AI-assisted institutional work environments.
