@@ -1,0 +1,9 @@
+# Mnemotron Wiki — Python dependencies
+# Install with:  pip install -r scripts/requirements.txt
+#
+# These are all well-maintained, widely-used open-source libraries.
+
+pdfminer.six        # PDF text extraction
+python-docx         # .docx / Word document reading
+beautifulsoup4      # HTML parsing and text extraction
+lxml                # Fast HTML/XML parser used by BeautifulSoup
