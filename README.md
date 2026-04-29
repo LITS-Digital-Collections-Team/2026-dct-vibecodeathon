@@ -18,6 +18,7 @@ This repository contains scripts, small tools, metadata patches, notebooks, and 
 | [`mnemotron-wiki/`](mnemotron-wiki/) | Mnemotron Wiki is a Claude-powered system that synthesizes professional documents, email, calendar data, and project notes into a structured, searchable Markdown wiki. You supply the raw material; Claude distills it into dossiers, topic pages, and a running index. Everything lives in plain Markdown files that you own, version with git, and read in any editor. |
 | [`combine_name_columns/`](combine_name_columns/) | A Python script that consolidates multiple role-specific personal_name columns in a metadata CSV file into a single pipe-delimited personal_name_combined column. |
 | [`metadata-generator-enhancer/`](metadata-generator-enhancer/) | A comprehensive Python tool for metadata catalogers to generate, enhance, validate, and export metadata for ingestion into Archipelago digital collections management system. |
+| [`asana-portfolio-daily-status/`](asana-portfolio-daily-status/) | A Claude Code / Cowork scheduled task that compiles a tidy, dated Markdown digest of the most recent task-level comment on every active project in a configured Asana portfolio, and saves it to a local folder. Can be combined with the Google Drive desktop client to post output to shared GDrive folders. |
 
 ## Who this is for
 
