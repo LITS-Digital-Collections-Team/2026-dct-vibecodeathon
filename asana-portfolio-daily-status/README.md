@@ -107,7 +107,7 @@ No Google APIs, no OAuth setup beyond the Asana connector, no third-party servic
 This package is released into the **public domain** under
 [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/). Reuse, fork,
 adapt, distribute, or rip apart freely, with or without attribution (if you want to be generous, 
-just credit "Digital Collections Team, Hamilton College LITS". 
+just credit "Digital Collections Team, Hamilton College LITS"). 
 
 The original was developed in an academic library / digital collections context, 
 but nothing in it is specific to that domain.
