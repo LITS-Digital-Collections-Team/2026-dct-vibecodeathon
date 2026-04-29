@@ -17,7 +17,7 @@ The intended audience is teams who:
 
 This package contains the skill instructions, configuration knobs, install notes, an
 example output, and a short design-rationale doc. Everything is plain Markdown and
-plain text — no build step, no compiled binary, no external service.
+plain text.
 
 ## What it does, concretely
 
