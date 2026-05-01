@@ -7,8 +7,10 @@ on demand ("run the research wiki ingest task") or on a schedule.
 
 ## Overview
 
-The ingest task runs in three stages:
+The ingest task runs in four stages:
 
+0. **Corpus assessment & taxonomy** — before processing new files, assess what
+   they are and establish or extend the topic and entity taxonomy.
 1. **Document ingest** — process all new files in `ingest/` into `wiki/sources/`
    and synthesize or update `wiki/topics/` pages.
 2. **Index update** — regenerate `wiki/INDEX.md`.
@@ -29,6 +31,91 @@ All paths are relative to the wiki root (the directory containing this file).
 | Entity pages (people, orgs, places) | `wiki/entities/` |
 | Main index | `wiki/INDEX.md` |
 | Content manifest | `.manifest.json` |
+
+---
+
+## Stage 0: Corpus Assessment and Taxonomy
+
+Run this stage **before processing any new files**. It ensures topics and
+entities exist to receive links from source pages, and prevents source pages
+from being islands with no taxonomy connections.
+
+### 0.1 Understand the corpus
+
+Read the list of new files from `check_ingest.py`. Before touching any file,
+answer these questions:
+
+- **What kind of material is this?**  
+  (newspaper issues, archival documents, academic papers, field notes, etc.)
+- **What institution, project, or subject is the primary focus?**
+- **What time period does it cover?**
+- **Is this a homogeneous batch** (many files of the same type, e.g., newspaper
+  issues) **or a mixed batch** (varied document types)?
+
+For batches of more than 5 files, write a brief assessment (2–4 sentences) in
+your working context before continuing. For large batches (50+ files), consider
+a quick sample: read 3–5 files at random and note the recurring subjects,
+names, and themes you observe.
+
+### 0.2 Establish or extend the taxonomy
+
+**Minimum taxonomy deliverables before any source pages are written:**
+
+#### Topics
+
+Create `wiki/topics/` pages for each major thematic category present in the
+corpus. Use the table below as a starting checklist — not all categories apply
+to every corpus, but most research projects touch several of them:
+
+| Category | When to create |
+|----------|---------------|
+| **Overview / collection** | Always, for any batch > 5 files from the same source |
+| **People and biography** | When the corpus focuses on specific individuals |
+| **Institutional history** | When the primary subject is an organization or institution |
+| **Athletics / sports** | When sports coverage is substantial |
+| **Governance & administration** | When policy, leadership, or decision-making recurs |
+| **Campus / physical environment** | When built spaces and facilities are discussed |
+| **Social life & culture** | When daily life, events, or community practices are documented |
+| **Politics & activism** | When political or social movements appear |
+| **Arts, culture & publications** | When cultural production is documented |
+| **Science & research** | When scholarly or scientific work is the subject |
+| **Economics & finance** | When funding, costs, or economic conditions are central |
+
+Topic pages do not require having read every source. Write them from what you
+know about the corpus type and what the sample files reveal. Leave `## Open
+Questions` generously populated — they will guide future reading.
+
+#### Entities
+
+Create `wiki/entities/` pages for entities that are **certain to recur** across
+the corpus. At minimum:
+
+- **The primary institution(s)** (college, organization, project) — always
+- **Major sub-organizations** (departments, teams, publications, committees)
+  when they are the recurring subject of coverage
+- **Physical locations** that serve as central anchors (buildings, campuses,
+  sites) when they appear repeatedly
+- **Named people** only if they are central figures with substantial documented
+  roles, not merely mentioned in passing; prefer to accumulate mentions in source
+  pages first, then create an entity page once the relevance is clear
+
+Entity pages for named individuals are expensive to maintain accurately.
+Default to creating organization and place entities; save person entities for
+figures who appear in many sources or who are central to the research questions.
+
+### 0.3 Check existing taxonomy
+
+Before creating any new topic or entity page, check whether one already exists:
+
+```bash
+ls wiki/topics/
+ls wiki/entities/
+```
+
+If an existing page covers the subject, plan to **update** it rather than
+create a duplicate. If a new batch significantly extends an existing topic
+(e.g., 50 more newspaper issues added to an archive with an existing overview
+page), update the overview page's scope statement and open questions.
 
 ---
 
@@ -225,6 +312,20 @@ After writing the source page, analyze its content:
   - If yes: update with new information.
   - If no and the entity is substantively relevant (not just mentioned in
     passing): create a new entity page.
+
+**Depth guidance by batch size:**
+
+| Batch size | Topic synthesis approach |
+|------------|-------------------------|
+| 1–5 files | Full per-file synthesis: read each source page, update or create topic and entity pages for every major subject. |
+| 6–50 files | Pre-establish taxonomy in Stage 0; link each source page to 1–3 existing topic pages; update topic pages with specific key points from the most significant sources in the batch (not necessarily every file). |
+| 50+ files | Pre-establish full taxonomy in Stage 0 (including overview topic and all major thematic topics); batch-process source page creation; then do a dedicated synthesis pass on a representative sample (e.g., earliest, latest, and mid-range issues plus any that appear thematically rich). Update topic pages with findings from the sample, and note that the full corpus warrants deeper synthesis. |
+
+**For large batches, the minimum synthesis deliverables are:**
+- An overview/collection topic page describing the full corpus
+- At least 5 thematic topic pages with Key Points grounded in specific sources
+- Entity pages for the primary institution(s) and any organization that recurs substantially across the corpus
+- All source pages linked to at least one topic page in the Related Topics section
 
 **Topic page template:**
 
