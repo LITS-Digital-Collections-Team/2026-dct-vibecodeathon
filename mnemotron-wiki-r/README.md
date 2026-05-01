@@ -60,6 +60,11 @@ source pages.
 **Idempotent manifest.** A content-hash manifest (`.manifest.json`) ensures no
 file is ever processed twice, even if renamed or moved within `ingest/`.
 
+**Internet Archive integration.** `ia_ingest.py` fetches items directly from
+Internet Archive by identifier, preferring IA's pre-built Tesseract OCR text
+(`*_djvu.txt`) and falling back to a local OCR pass on the original PDF when
+the pre-built text is absent or too noisy.
+
 ---
 
 ## 2. System requirements
@@ -70,6 +75,7 @@ file is ever processed twice, even if renamed or moved within `ingest/`.
 | Git | Any recent | Version control for the wiki |
 | Tesseract | 4.0 | Offline print OCR |
 | poppler (`pdftoppm`) | Any recent | PDF-to-image rasterization for scanned PDFs |
+| `internetarchive` (pip) | 5.0 | `ia_ingest.py` — fetching from Internet Archive (optional) |
 | `ANTHROPIC_API_KEY` | — | Claude Vision OCR fallback; handwriting transcription |
 
 **macOS installation (Homebrew):**
@@ -82,6 +88,13 @@ brew install tesseract poppler
 
 ```bash
 sudo apt install tesseract-ocr poppler-utils
+```
+
+**Internet Archive CLI (optional — only needed for `ia_ingest.py`):**
+
+```bash
+pip install internetarchive
+ia configure          # enter your archive.org credentials
 ```
 
 Tesseract and poppler are optional in the sense that the tool will still run
@@ -150,25 +163,137 @@ ingest/interview-transcript.pdf         ← native PDF or scanned print
 
 ### 4.2 Running the ingest task
 
-Open a Claude Code session in the `mnemotron-wiki-r` directory and say any of:
+Open a Claude Code session in the wiki root directory and say any of:
 
 - `run the research wiki ingest task`
 - `ingest new documents`
 - `process the ingest folder`
 
 Claude reads `RESEARCH_WIKI_TASK.md`, which contains the full pipeline
-instructions. It will:
+instructions. The task runs in **four stages**:
 
-1. Find all unprocessed files in `ingest/`.
-2. Extract text or OCR each file.
-3. Write a `wiki/sources/` page for each document.
-4. Create or update `wiki/topics/` pages synthesizing the content.
-5. Create or update `wiki/entities/` pages for key people, organizations, and
-   places.
-6. Regenerate `wiki/INDEX.md`.
-7. Commit all changes to git.
+**Stage 0 — Corpus assessment and taxonomy** (new batches only): Before
+processing any files, Claude assesses the batch — its document type, subject,
+and time period — and creates or extends `wiki/topics/` and `wiki/entities/`
+pages to receive the new sources. This stage runs automatically for batches of
+more than 5 files and prevents source pages from being islands with no topic
+connections.
 
-### 4.3 Checking what is queued
+**Stage 1 — Document ingest**: Claude extracts text or runs OCR on each file,
+writes a source page to `wiki/sources/`, and synthesizes findings into topic
+and entity pages.
+
+**Stage 2 — Index update**: `wiki/INDEX.md` is regenerated to reflect all
+new content.
+
+**Stage 3 — Git commit**: All changes are committed with a dated message.
+
+### 4.3 Batch ingest (automated runner)
+
+For large batches of pre-processed text files, `batch_ingest.py` automates
+source page creation without requiring a full Claude session:
+
+```bash
+python batch_ingest.py              # process all pending files in ingest/
+python batch_ingest.py --dry-run    # plan without writing any files
+python batch_ingest.py --limit 50   # process at most 50 files
+```
+
+`batch_ingest.py` reads `ingest/` (via the manifest), extracts text from each
+file using `scripts/extract_text.py`, generates a source page, saves it to
+`wiki/sources/`, and updates `.manifest.json` after every file (so a partial
+run resumes safely). It does **not** perform topic synthesis — run the full
+ingest task in Claude for that step.
+
+**Corpus-specific formatting:** Source pages for files matching a recognized
+naming convention can receive custom titles and metadata. Add corpus-specific
+page generators to `_build_page()` in `batch_ingest.py`; see the comments
+there for the pattern. The script ships with a generic fallback (`_document_page`)
+and a CSV handler that work for any corpus out of the box.
+
+### 4.4 Fetching from Internet Archive
+
+`ia_ingest.py` fetches and ingests items from Internet Archive directly,
+without requiring any local copies of the original files. It is designed for
+large digitized collections where IA is the primary source.
+
+**Prerequisites:**
+
+```bash
+pip install internetarchive
+ia configure          # enter archive.org credentials
+```
+
+**Setup:**
+
+Create `ingest/ia-sources/search.csv` with one IA identifier per row (the
+first column). A header row of `identifier` is detected and skipped
+automatically. Run an IA search and download the CSV, or build it manually:
+
+```
+identifier
+my-collection-1947-01-15
+my-collection-1947-01-22
+...
+```
+
+**Running:**
+
+```bash
+python ia_ingest.py                      # process all pending identifiers
+python ia_ingest.py --dry-run            # fetch metadata only; no downloads
+python ia_ingest.py --limit 25           # process at most 25 identifiers
+python ia_ingest.py --verbose            # per-step progress to stderr
+python ia_ingest.py --csv path/to.csv   # use an alternate CSV file
+```
+
+**How it works:**
+
+For each identifier not already in `ingest/ia-sources/processed.json`:
+
+1. Fetches IA metadata and confirms `mediatype == "texts"`.
+2. Downloads `*_djvu.txt` — IA's pre-built Tesseract OCR (fast, ~100–400 KB).
+3. Evaluates OCR quality (word count ≥ 100, alpha ratio ≥ 40%). If it passes,
+   the djvu text is used directly (`ocr_method: ia-tesseract`).
+4. If the djvu text is absent or too noisy, downloads the original image PDF
+   (may be 50–100 MB) and runs the local OCR pipeline — pdfminer for PDFs
+   with a text layer, or Tesseract → Claude Vision for scanned PDFs.
+5. Writes a source page to `wiki/sources/` and records the identifier in
+   `ingest/ia-sources/processed.json`.
+
+Progress is printed one line per identifier. `processed.json` is saved after
+each successful item, so the run can be interrupted and resumed safely.
+
+**Tracking:** IA items are tracked in `ingest/ia-sources/processed.json`
+(keyed by identifier), separate from `.manifest.json` (which is keyed by
+content hash of local files). Both logs prevent reprocessing items already
+in `wiki/sources/`.
+
+### 4.5 Automatic topic linking
+
+After source pages have been created (by batch ingest or IA ingest),
+`synthesize_links.py` adds a `## Related Topics` section to each source page
+that does not already have one, based on keyword matching:
+
+```bash
+python synthesize_links.py              # process all source pages
+python synthesize_links.py --dry-run    # show what would be linked
+python synthesize_links.py --limit 100  # process at most 100 pages
+```
+
+This is the mechanical first step of the synthesis pipeline — it populates
+cross-references automatically so the manual synthesis pass (reading sources
+and writing Key Points in topic pages) can focus on analysis rather than
+bookkeeping.
+
+**Customizing the topic map:** Edit the `TOPIC_MAP` list at the top of
+`synthesize_links.py` to define which keywords trigger which topic links for
+your corpus. Each entry specifies a topic slug, display title, relative path,
+a list of case-insensitive keywords, and a threshold (minimum number of
+keyword matches required). Set `threshold: 0` for a topic that should link to
+every source page unconditionally (useful for an overview/collection topic).
+
+### 4.6 Checking what is queued
 
 At any time, check which files are waiting to be processed:
 
@@ -178,7 +303,7 @@ python scripts/check_ingest.py --summary # counts only
 python scripts/check_ingest.py --all     # include already-processed files
 ```
 
-### 4.4 Reviewing the manifest
+### 4.7 Reviewing the manifest
 
 To see a log of every file that has been processed:
 
@@ -189,7 +314,7 @@ python scripts/manifest.py
 Output columns: original filename, UTC timestamp of processing, wiki source
 page created.
 
-### 4.5 Handling failed files
+### 4.8 Handling failed files
 
 Files that cannot be processed (extraction error, OCR failure) are moved to
 `ingest/failed/` and are never automatically retried. Inspect them to
@@ -264,6 +389,10 @@ three must pass for the result to be considered acceptable:
 Thresholds are configurable in `scripts/config.py` (see
 [Section 8](#8-configuration-reference)).
 
+`ia_ingest.py` uses separate, more lenient thresholds for evaluating
+full-document djvu.txt quality (word count ≥ 100, alpha ratio ≥ 40%),
+configured at the top of that script.
+
 ### 6.3 Pre-flight thumbnail
 
 Before running Tesseract at full resolution, a 25%-scale thumbnail of the
@@ -314,13 +443,15 @@ wiki/
 
 One page per ingested document. Contains:
 
-- YAML frontmatter: title, type, OCR method, ingest date, original filename,
-  tags.
+- YAML frontmatter: title, type, OCR method, ingest date, original filename
+  (or `ia:<identifier>` for IA items), tags.
 - **Source Information** — provenance, authorship, approximate date.
 - **Content** — full extracted or transcribed text, lightly formatted as
   markdown.
 - **Notes** — OCR quality assessment and manual-review flag (Tesseract output
   only).
+- **Related Topics** — links to topic pages, added automatically by
+  `synthesize_links.py` or by Claude during synthesis.
 
 Source pages are **transcriptions**, not interpretations. They are faithful to
 the source material; analysis belongs in topic pages.
@@ -395,6 +526,73 @@ tune OCR behavior; all other scripts import from it.
 ## 9. Script reference
 
 All scripts can be run from the wiki root. They accept a `--help` flag.
+
+### `batch_ingest.py`
+
+Automated bulk ingest of all pending files in `ingest/`. Creates source pages,
+updates `.manifest.json`, but does **not** run topic synthesis (do that via the
+full Claude ingest task).
+
+```bash
+python batch_ingest.py              # process all pending files
+python batch_ingest.py --dry-run    # plan without writing files
+python batch_ingest.py --limit 50   # process at most 50 files
+```
+
+**Import (for corpus-specific extensions):**
+
+The `make_slug()` and `_build_page()` functions are importable and used by
+`ia_ingest.py`. To add a corpus-specific source page generator, define a
+function and register it in `_build_page()`.
+
+### `ia_ingest.py`
+
+Fetches items from Internet Archive by identifier and ingests them into
+`wiki/sources/`. Uses IA's pre-built djvu.txt OCR when available; falls back
+to downloading the original PDF and running the local OCR pipeline.
+
+```bash
+python ia_ingest.py                      # process all pending identifiers
+python ia_ingest.py --dry-run            # fetch metadata only; no downloads
+python ia_ingest.py --limit 25           # process at most 25 identifiers
+python ia_ingest.py --verbose            # per-step progress to stderr
+python ia_ingest.py --csv path/to.csv   # use an alternate identifier list
+```
+
+Reads identifiers from `ingest/ia-sources/search.csv` by default. Tracks
+processed items in `ingest/ia-sources/processed.json` (separate from
+`.manifest.json`, because IA items have no local file to hash).
+
+Quality thresholds for djvu.txt acceptance (configurable at the top of the
+script):
+
+| Constant | Default | Meaning |
+|----------|---------|---------|
+| `IA_OCR_MIN_WORDS` | `100` | Fewer words → fall back to PDF |
+| `IA_OCR_MIN_ALPHA_RATIO` | `0.40` | Below this → fall back to PDF |
+| `IA_DOWNLOAD_DELAY` | `1.0 s` | Polite delay between IA requests |
+
+### `synthesize_links.py`
+
+Adds `## Related Topics` sections to source pages that lack them, by matching
+each page's `## Content` section against a keyword map.
+
+```bash
+python synthesize_links.py              # process all source pages
+python synthesize_links.py --dry-run    # show what would be linked
+python synthesize_links.py --limit 100  # process at most 100 pages
+```
+
+Edit `TOPIC_MAP` in the script to define the keywords and thresholds for your
+corpus before running. Each entry:
+
+| Key | Description |
+|-----|-------------|
+| `"slug"` | Filename stem of the topic page (no `.md`) |
+| `"title"` | Display name used in the `## Related Topics` link |
+| `"path"` | Relative path from `wiki/sources/` to the topic page |
+| `"keywords"` | Case-insensitive strings to search for in source content |
+| `"threshold"` | Minimum matches required (0 = always link) |
 
 ### `scripts/config.py`
 
@@ -530,6 +728,20 @@ This key is required for:
 - Print OCR pages where Tesseract quality is too low
 - Any page in a document where the Tesseract pre-flight fails
 
+### `ia: command not found` or `ia_ingest.py` errors
+
+Install the `internetarchive` package and configure credentials:
+
+```bash
+pip install internetarchive
+ia configure
+```
+
+If `ia metadata <identifier>` returns nothing or exits non-zero, the
+identifier may not exist on IA, or the item may be restricted. Use
+`--dry-run --verbose` to inspect what `ia_ingest.py` finds for each item
+before committing to a full run.
+
 ### OCR output is mostly garbage
 
 If Tesseract is producing mostly noise, try raising the quality thresholds in
@@ -542,6 +754,10 @@ TESSERACT_MIN_ALPHA_RATIO = 0.55  # was 0.45
 
 Alternatively, use `--hint print` and raise `PDF_OCR_DPI = 400` for very fine
 print (increases processing time and file sizes).
+
+For `ia_ingest.py`, raise `IA_OCR_MIN_WORDS` or `IA_OCR_MIN_ALPHA_RATIO` at
+the top of that script to force more items through the local OCR pipeline
+instead of accepting IA's djvu.txt.
 
 ### A file keeps appearing in `check_ingest.py` output after processing
 
@@ -569,7 +785,8 @@ garbled from OCR:
 
 ## 11. License
 
-**Code** (`scripts/*.py`, `setup.sh`):  
+**Code** (`scripts/*.py`, `batch_ingest.py`, `ia_ingest.py`,
+`synthesize_links.py`, `setup.sh`):  
 Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS.  
 Licensed under the GNU General Public License, version 3 or any later version.  
 Full text: <https://www.gnu.org/licenses/gpl-3.0.html>
