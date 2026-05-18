@@ -117,6 +117,41 @@ create a duplicate. If a new batch significantly extends an existing topic
 (e.g., 50 more newspaper issues added to an archive with an existing overview
 page), update the overview page's scope statement and open questions.
 
+### 0.4 Configure project permissions (required before running background agents)
+
+Background synthesis agents run without inheriting the parent session's tool
+permissions. Before running any parallel agents, verify that
+`.claude/settings.json` exists at the project root:
+
+```bash
+ls .claude/settings.json 2>/dev/null || echo "MISSING — create it"
+```
+
+If missing, create it:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Edit",
+      "Write",
+      "Bash(grep*)",
+      "Bash(find*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(wc*)",
+      "Bash(ls*)"
+    ]
+  }
+}
+```
+
+Without this file, agents will be denied `Edit` and `Write` permissions and
+will either fail silently or fall back to full-file `Write` operations that
+risk overwriting concurrent changes by other agents.
+
 ---
 
 ## Stage 1: Document Ingest
@@ -301,6 +336,14 @@ Manual review recommended: [yes / no — reason if yes]
 
 ### 1.5 Synthesize or update topic pages
 
+> **Two synthesis modes exist.** This step (Stage 1.5) is the *breadth-first*
+> mode: read a source, update the topics it touches. This is essential for
+> discovering new themes and ensuring the wiki's coverage is wide. Stage 4
+> is the *depth-first* mode: start from an open question and grep for the
+> sources that answer it. Both are necessary. Stage 1.5 identifies the
+> questions; Stage 4 answers them. Alternate between modes rather than
+> committing exclusively to one.
+
 After writing the source page, analyze its content:
 
 - **Does an existing `wiki/topics/` page cover this subject?**
@@ -477,6 +520,23 @@ updated: YYYY-MM-DD
 | filename.ext | YYYY-MM-DD | [slug](sources/slug.md) |
 ```
 
+After rewriting INDEX.md, run the two index maintenance scripts:
+
+```bash
+# Regenerate the consolidated open questions list from all topic pages
+python scripts/open_questions.py
+
+# Update Related Topics sections on source pages
+python synthesize_links.py
+# or, after adding new topic pages, to regenerate all sections:
+python synthesize_links.py --rebuild
+```
+
+`open_questions.py` writes `wiki/OPEN-QUESTIONS.md` automatically — do not
+edit that file by hand.  `synthesize_links.py` without `--rebuild` only adds
+sections to pages that lack one; `--rebuild` strips and regenerates all
+sections (slower, but necessary after adding or renaming topic pages).
+
 ---
 
 ## Stage 3: Git Commit
@@ -490,6 +550,129 @@ If nothing has changed since the last run, skip the commit.
 
 ---
 
+## Stage 4: Deep Synthesis Pass (question-driven, targeted)
+
+Run this stage **after** Stage 1 has established broad coverage of the corpus.
+It answers specific open questions by grepping for relevant source files rather
+than reading files in sequence. It complements Stage 1 rather than replacing
+it — Stage 1 ensures no major topics are missed; Stage 4 answers the questions
+Stage 1 surfaces.
+
+**When to run Stage 4 instead of another Stage 1 pass:**
+- The wiki has at least one full breadth pass behind it (all or most source
+  files linked to at least one topic page, Open Questions sections populated)
+- You want to go deeper on a specific question rather than wider across the
+  corpus
+- Two or more topic pages share a gap that a single targeted search can fill
+
+**Warning: Stage 4 is depth-optimized and can create blind spots.** Running
+Stage 4 repeatedly without returning to Stage 1 risks a wiki that goes 10
+levels deep on a few topics while missing others entirely. Alternate between
+modes: one Stage 1 breadth pass for every 2–3 Stage 4 depth passes is a
+reasonable rhythm for large corpora.
+
+### 4.1 Identify open questions
+
+Check for a compiled open questions document:
+
+```bash
+cat wiki/OPEN-QUESTIONS.md
+# or for a quick count by topic:
+python scripts/open_questions.py --count
+```
+
+If the file is missing or stale, regenerate it:
+
+```bash
+python scripts/open_questions.py
+```
+
+Select 2–4 questions that are:
+- **Specific enough to grep for** — answerable by searching for known terms,
+  names, or dates in the source corpus
+- **Cross-cutting** — findings that update multiple topic pages are highest
+  value per unit of work
+- **Independent** — if two questions touch different topic pages and different
+  source ranges, they can be run as parallel background agents
+
+### 4.2 Research by question, not by file
+
+For each question:
+
+1. Grep the source corpus for terms that would appear in relevant files:
+   ```bash
+   grep -rn "term1\|term2\|term3" wiki/sources/ 2>/dev/null | head -20
+   ```
+2. Identify the 3–6 most relevant files from the results
+3. For each file: grep for specific line numbers, then `Read` ±80 lines around
+   each hit — do not read files from line 1 unless the whole file is relevant
+4. Follow the question across whichever files answer it; stop when the answer
+   is clear rather than reading everything that mentions the topic
+
+### 4.3 Write additively using Edit
+
+After research, use `Edit` to insert new Key Points and source table rows into
+existing topic pages. See the **Additive editing rule** in Style notes below.
+
+### 4.4 Parallel agents for independent questions
+
+When two or more open questions are independent, launch them as parallel
+background agents. Use the **agent manifest** to prevent concurrent edit
+conflicts:
+
+```bash
+# Before launching: check whether target pages are already claimed
+python scripts/agent_manifest.py check wiki/topics/TARGET.md
+
+# At agent start: claim the pages this agent will edit
+python scripts/agent_manifest.py claim AGENT_ID "Depth pass: description" \
+    wiki/topics/TARGET.md [wiki/topics/OTHER.md ...]
+
+# At agent finish: release the claim
+python scripts/agent_manifest.py release AGENT_ID
+
+# If a prior run crashed without releasing:
+python scripts/agent_manifest.py prune --hours 4
+
+# Show all active agents:
+python scripts/agent_manifest.py list
+```
+
+The manifest lives at `wiki/.agent-manifest.json`. Claims expire automatically
+after 4 hours (`STALE_HOURS`) to handle crashed agents. `check` exits non-zero
+if a conflict exists — use this as a gate before launching.
+
+Each agent should:
+- Have one clearly bounded question or subject area in its prompt
+- Target specific named source files or ranges identified by prior grep
+- Write to non-overlapping topic pages where possible
+- Claim its target pages via the manifest at start; release at finish
+- Commit independently with a descriptive message
+
+Provide each agent with the exact grep commands needed to find relevant
+sources, the names of the topic files it should write to, and explicit
+instructions to use `Edit` (not `Write`) and to read the current file state
+before editing.
+
+### 4.5 Maintain OPEN-QUESTIONS.md
+
+After Stage 4, regenerate `wiki/OPEN-QUESTIONS.md`:
+
+```bash
+python scripts/open_questions.py
+```
+
+The script reads `## Open Questions` from all topic pages, deduplicates
+within each topic, and rewrites the file. To update the underlying questions,
+**edit the individual topic pages** — changes flow into OPEN-QUESTIONS.md on
+the next run.
+
+After regenerating, review the output and manually remove or reword any
+questions that are now answered or that warrant rephrasing. Then commit with
+Stage 3.
+
+---
+
 ## Style notes
 
 - Write all wiki pages in plain prose. Use bullet lists only where list
@@ -497,8 +680,21 @@ If nothing has changed since the last run, skip the commit.
 - Use relative links between pages (`[Title](../topics/slug.md)`) so the wiki
   stays portable across machines.
 - Frontmatter is YAML; quote all string values.
-- Do not delete or overwrite existing wiki content without good reason. Prefer
-  updating clearly marked sections or appending new information.
+
+### Additive editing rule (strictly enforced)
+
+Topic and entity pages grow over time and may be modified by concurrent agents.
+**Always use `Edit` (not `Write`) when updating an existing topic or entity
+page.** `Write` replaces the entire file and will silently destroy content
+added by other agents or sessions running in parallel.
+
+The only valid uses of `Write` on wiki pages are:
+- Creating a brand new page that does not yet exist
+- Complete rewrite of a stub page that has no substantive content yet
+
+Before any `Edit`, confirm you have read the current file state with `Read`.
+If you receive a "file modified since read" error, re-read the current file
+before retrying — never proceed with stale content.
 
 ### Source pages (transcription rules)
 
