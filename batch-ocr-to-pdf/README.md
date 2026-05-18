@@ -84,3 +84,24 @@ python batch_ocr_to_pdf.py "C:\Users\khoffman\Documents\TIFFs" --engine auto --o
 - If Surya fails to load, check that `surya-ocr` is installed and compatible with your environment.
 - If Tesseract fails, verify `pytesseract` is installed and `tesseract.exe` is on your PATH.
 - If OCR text is missing, enable `--debug` to inspect the validation PDF overlay output.
+
+## Attribution
+
+This script was created with assistance from Claude Sonnet 4.5 (claude.ai) and GitHub Copilot.
+
+## License
+**Code** `(batch-ocr-to-pdf.py)`:
+
+Copyright (C) 2026 Kim Hoffman, Hamilton College LITS.
+
+Licensed under the GNU General Public License, version 3 or any later version.
+
+Full text: https://www.gnu.org/licenses/gpl-3.0.html
+
+**This document:**
+
+Copyright (C) 2026 Kim Hoffman, Hamilton College LITS.
+
+Licensed under the GNU Free Documentation License, version 1.3 or any later version, with no Invariant Sections, no Front-Cover Texts, and no Back-Cover Texts.
+
+Full text: https://www.gnu.org/licenses/fdl.html
