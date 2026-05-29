@@ -1,6 +1,6 @@
 # compare_dirs.py
 
-Compare two or more directories by file content and report anything missing from one or more of them. Uses SHA256 hashing, so a file is considered present as long as its content exists somewhere in the target directory — the filename and location don't need to match.
+Compare two or more directories by file content and report anything missing from one or more of them. Uses MD5 hashing by default (SHA256 also available), so a file is considered present as long as its content exists somewhere in the target directory — the filename and location don't need to match.
 
 Useful for verifying that a backup, copy, or delivery is complete.
 
@@ -19,6 +19,12 @@ python compare_dirs.py dir1 dir2 dir3
 
 # Save results to a CSV file
 python compare_dirs.py dir1 dir2 --output diff_results.csv
+
+# Use SHA256 instead of the default MD5
+python compare_dirs.py dir1 dir2 --hash sha256
+
+# Combine options
+python compare_dirs.py dir1 dir2 --hash sha256 --output diff_results.csv
 ```
 
 ## Output
@@ -46,16 +52,18 @@ Total discrepancies: 0
 
 With `--output`, results are saved as a spreadsheet with one row per discrepancy and one column per directory, showing `present` or `MISSING`:
 
-| sha256_hash | file_path | name | dir1 | dir2 |
+| md5_hash | file_path | name | dir1 | dir2 |
 |---|---|---|---|---|
 | a3f1c2d4... | images/photo.jpg | photo.jpg | present | MISSING |
 | 9b8e7f6a... | documents/report.pdf | report.pdf | MISSING | present |
+
+The hash column is named `md5_hash` or `sha256_hash` depending on the algorithm used.
 
 If the output file already exists, the script will prompt you to enter a different filename or press Enter to overwrite.
 
 ## How it works
 
-The script walks each directory recursively, computing a SHA256 hash for every file. It then compares the sets of hashes and reports any hash that is missing from at least one directory. The following files are silently skipped: `.DS_Store`, `Thumbs.db`, `desktop.ini`.
+The script walks each directory recursively, computing a hash for every file (MD5 by default, or SHA256 with `--hash sha256`). It then compares the sets of hashes and reports any hash that is missing from at least one directory. The following files are silently skipped: `.DS_Store`, `Thumbs.db`, `desktop.ini`.
 
 File paths in the output are stored relative to each directory root, so `sub/folder/file.txt` rather than `/full/path/to/dir1/sub/folder/file.txt`.
 

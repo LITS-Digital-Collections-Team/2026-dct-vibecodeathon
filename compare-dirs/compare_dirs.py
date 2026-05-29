@@ -2,7 +2,7 @@
 """
 compare_dirs.py
 
-Walk two or more directories, compute SHA256 hashes for every file,
+Walk two or more directories, compute MD5 hashes for every file,
 and report any files whose content is missing from one or more directories.
 A file is considered present as long as its hash exists somewhere in the
 directory -- its name and location do not need to match.
@@ -51,19 +51,20 @@ def resolve_output_path(path):
     return path
 
 
-def hash_file(path):
-    """Compute the SHA256 hash of a file, reading in chunks.
+def hash_file(path, algorithm='md5'):
+    """Compute the hash of a file, reading in chunks.
 
     Chunked reading keeps memory usage flat regardless of file size.
+    Supported algorithms: 'md5', 'sha256'.
     """
-    h = hashlib.sha256()
+    h = hashlib.new(algorithm)
     with open(path, 'rb') as f:
         while chunk := f.read(CHUNK_SIZE):
             h.update(chunk)
     return h.hexdigest()
 
 
-def scan_directory(dirpath):
+def scan_directory(dirpath, algorithm='md5'):
     """Recursively walk a directory and return a dict mapping hash -> {FILE_PATH, NAME}.
 
     FILE_PATH is stored relative to dirpath so paths are comparable across
@@ -92,7 +93,7 @@ def scan_directory(dirpath):
             try:
                 # Show a live progress line that overwrites itself
                 print(f"  Scanning {dirpath}: {file_count} files hashed...", end='\r')
-                key = hash_file(abs_path)
+                key = hash_file(abs_path, algorithm)
                 file_count += 1
 
                 if key in items:
@@ -112,18 +113,20 @@ def scan_directory(dirpath):
     return items
 
 
-def build_diff_rows(all_items):
+def build_diff_rows(all_items, algorithm='md5'):
     """Build a truth-table of discrepancies across N directories.
 
     Args:
         all_items: dict of {dirpath: {hash: {FILE_PATH, NAME}}}
+        algorithm: hash algorithm name used (for the output column label)
 
     Returns:
         (rows, dirnames) where each row is a dict with keys:
-            sha256_hash, file_path, name, <dir_1>, <dir_2>, ...
+            <algorithm>_hash, file_path, name, <dir_1>, <dir_2>, ...
         Each directory key is set to 'present' or 'MISSING'.
         Only hashes absent from at least one directory are included.
     """
+    hash_col = f'{algorithm}_hash'
     dirnames = list(all_items.keys())
 
     # Union of every hash seen across all directories
@@ -141,7 +144,7 @@ def build_diff_rows(all_items):
             # Pull metadata from the first directory that has this hash
             sample = next(all_items[d][key] for d in dirnames if key in all_items[d])
             row = {
-                'sha256_hash': key,
+                hash_col:      key,
                 'file_path':   sample['FILE_PATH'],
                 'name':        sample['NAME'],
             }
@@ -152,14 +155,14 @@ def build_diff_rows(all_items):
     return rows, dirnames
 
 
-def write_csv(output_path, rows, dirnames):
+def write_csv(output_path, rows, dirnames, algorithm='md5'):
     """Write diff rows to a CSV file.
 
-    Columns: sha256_hash, file_path, name, then one column per input directory
-    showing 'present' or 'MISSING'. This truth-table layout is easy to filter
-    by directory in Excel or Numbers.
+    Columns: <algorithm>_hash, file_path, name, then one column per input
+    directory showing 'present' or 'MISSING'. This truth-table layout is easy
+    to filter by directory in Excel or Numbers.
     """
-    fieldnames = ['sha256_hash', 'file_path', 'name'] + dirnames
+    fieldnames = [f'{algorithm}_hash', 'file_path', 'name'] + dirnames
     with open(output_path, 'w', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
@@ -177,24 +180,31 @@ def main():
         help='Write differences to this CSV file (e.g. diff_results.csv)',
         default=None,
     )
+    parser.add_argument(
+        '--hash', '-H',
+        dest='algorithm',
+        choices=['md5', 'sha256'],
+        default='md5',
+        help='Hash algorithm to use (default: md5)',
+    )
     args = parser.parse_args()
 
     if len(args.dirs) < 2:
         parser.error('At least two directories are required.')
 
     # Scan each directory and build hash -> file maps
-    print("Hashing files...")
-    all_items = {d: scan_directory(d) for d in args.dirs}
+    print(f"Hashing files ({args.algorithm})...")
+    all_items = {d: scan_directory(d, args.algorithm) for d in args.dirs}
 
     # Find hashes missing from one or more directories
-    diff_rows, dirnames = build_diff_rows(all_items)
+    diff_rows, dirnames = build_diff_rows(all_items, args.algorithm)
 
     print()
 
     # Print one line per discrepancy to stdout
     for r in diff_rows:
         missing_from = [d for d in dirnames if r[d] == 'MISSING']
-        print(f"Missing from {', '.join(missing_from)}: {r['file_path']} ({r['sha256_hash']})")
+        print(f"Missing from {', '.join(missing_from)}: {r['file_path']} ({r[f'{args.algorithm}_hash']})")
 
     # Print per-directory summary
     print(f"\nTotal discrepancies: {len(diff_rows)}")
@@ -205,7 +215,7 @@ def main():
     if args.output:
         # Resolve the output path, prompting if the file already exists
         output_path = resolve_output_path(args.output)
-        write_csv(output_path, diff_rows, dirnames)
+        write_csv(output_path, diff_rows, dirnames, args.algorithm)
 
     # Exit 1 if mismatches found so shell scripts and CI can detect failure
     sys.exit(1 if diff_rows else 0)
