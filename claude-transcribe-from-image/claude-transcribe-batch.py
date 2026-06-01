@@ -26,7 +26,7 @@ Usage:
 
 Supported input formats: .jpg .jpeg .png .tiff .tif .pdf
 
-Requires ANTHROPIC_API_KEY set in your environment.
+Authentication: run `claude --login` (preferred) or set ANTHROPIC_API_KEY.
 
 For PDF support, also install pdf2image and its poppler dependency:
     pip install pdf2image
@@ -41,6 +41,7 @@ Dependencies:
 import argparse
 import base64
 import io
+import json
 import os
 import sys
 import time
@@ -268,6 +269,62 @@ def process_pdf_file(client: anthropic.Anthropic, path: Path) -> Tuple[str, int,
 
 
 # ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+
+def _read_claude_code_token() -> "str | None":
+    """Read a credential from the Claude Code credential store, if present.
+
+    Checks the standard locations written by ``claude --login``.  Returns the
+    first usable value found: a direct API key, or an OAuth access token.
+    """
+    candidates = [
+        Path.home() / ".claude" / ".credentials.json",
+        Path.home() / ".config" / "claude" / "credentials.json",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text())
+            key = data.get("apiKey") or data.get("api_key")
+            if key:
+                return key
+            token = (
+                data.get("oauthAccount", {}).get("accessToken")
+                or data.get("accessToken")
+            )
+            if token:
+                return token
+        except Exception:
+            pass
+    return None
+
+
+def _build_client() -> "anthropic.Anthropic":
+    """Return an authenticated Anthropic client.
+
+    Credentials are resolved in this order:
+    1. ``ANTHROPIC_API_KEY`` environment variable (explicit override).
+    2. Claude Code credential store written by ``claude --login``
+       (``~/.claude/.credentials.json`` or ``~/.config/claude/credentials.json``).
+    """
+    token = os.environ.get("ANTHROPIC_API_KEY") or _read_claude_code_token()
+    if token:
+        return anthropic.Anthropic(api_key=token)
+    print(
+        "ERROR: No Anthropic credentials found.\n"
+        "\n"
+        "  Preferred: run  claude --login\n"
+        "             to authenticate via your institutional account.\n"
+        "\n"
+        "  Fallback:  export ANTHROPIC_API_KEY='sk-ant-...'",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -278,7 +335,7 @@ def main() -> None:
         epilog=(
             "Supported input formats: .jpg .jpeg .png .tiff .tif .pdf\n\n"
             "--input may be a single file or a directory.\n\n"
-            "Set ANTHROPIC_API_KEY in your environment before running.\n"
+            "Run `claude --login` to authenticate, or set ANTHROPIC_API_KEY.\n"
             "PDF support requires: pip install pdf2image\n"
             "  and poppler:        brew install poppler (macOS)\n"
             "                      apt install poppler-utils (Ubuntu/Debian)"
@@ -330,15 +387,7 @@ def main() -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        print(
-            "ERROR: ANTHROPIC_API_KEY environment variable is not set.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    client = anthropic.Anthropic(api_key=api_key)
+    client = _build_client()
 
     total = len(files)
 

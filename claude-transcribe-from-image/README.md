@@ -2,8 +2,8 @@
 
 Batch-transcription of scanned handwritten manuscript images and PDFs using
 the [Anthropic Claude](https://www.anthropic.com/claude) vision API
-(`claude-sonnet-4-6`).  Developed at Hamilton
-College Library, Information & Technology Services (LITS) for use with institutional Anthropic accounts.
+(`claude-sonnet-4-6`).  Developed for the digitisation programme at Hamilton
+College Library, Information & Technology Services (LITS).
 
 ---
 
@@ -54,13 +54,18 @@ All pages of a multi-page PDF are transcribed and concatenated into a single
 
 ## Requirements
 
-| Package | Purpose | Install |
-|---------|---------|---------|
+| Dependency | Purpose | Install |
+|------------|---------|---------|
 | Python 3.9+ | — | — |
+| `claude` CLI | Credential store for institutional SSO | `npm install -g @anthropic-ai/claude-code` or via desktop app |
 | `anthropic` | Anthropic API client | `pip install anthropic` |
 | `Pillow` | Image resizing and re-encoding | `pip install Pillow` |
 | `pdf2image` | PDF → image conversion *(PDF input only)* | `pip install pdf2image` |
 | poppler | Back-end for pdf2image *(PDF input only)* | see below |
+
+The `claude` CLI is only required if you are authenticating via `claude --login`
+(the institutional SSO path).  If you are using `ANTHROPIC_API_KEY` directly,
+it is not needed.
 
 **Installing poppler:**
 
@@ -82,15 +87,31 @@ pip install anthropic Pillow pdf2image
 
 ## Configuration
 
-The script reads your Anthropic API key from the environment variable
-`ANTHROPIC_API_KEY`.  Set it before running:
+### Authentication
+
+**Preferred — institutional SSO (Hamilton College Team Plan):**
+
+```bash
+claude --login
+```
+
+Log in once with your Hamilton credentials.  The script reads the stored
+credentials automatically on every subsequent run; no environment variable
+is needed.
+
+**Fallback — direct API key:**
+
+If you have a personal Anthropic API key and need to override the credential
+store, set `ANTHROPIC_API_KEY` in your environment:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-To make this permanent, add the line to your shell profile (`~/.zprofile`,
-`~/.bashrc`, etc.).
+The environment variable takes priority over the credential store when both
+are present.
+
+### Tunable constants
 
 The following constants at the top of the script can be adjusted without
 changing any logic:
