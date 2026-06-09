@@ -1,0 +1,95 @@
+================================================================================
+              GCV OCR TO PDF PIPELINE - START HERE
+================================================================================
+
+Welcome! Your OCR batch processing pipeline is ready.
+
+WHAT WAS BUILT:
+ Complete OCR pipeline using Google Cloud Vision
+ Character-level text overlay with XY coordinates
+ Batch processing with intelligent file grouping
+ Searchable PDF generation from TIFF/JPEG images
+ Production-ready code with comprehensive documentation
+
+FILES IN THIS DIRECTORY:
+ The complete pipeline (476 lines)
+ Python dependencies to install
+ Documentation navigation guide
+ 5-minute setup guide (START HERE!)
+ Full documentation
+ Design & technical details
+ Complete feature list
+ 12+ real-world examples
+
+GETTING STARTED (3 STEPS):
+
+Step 1: Install Dependencies
+--------
+pip install -r requirements.txt
+
+Step 2: Configure Google Cloud
+--------
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+
+Step 3: Run Pipeline
+--------
+python main.py --input-dir ./images --output-dir ./pdfs \
+               --credentials-path ./service-account-key.json
+
+QUICK REFERENCE:
+
+Get help:
+  python main.py --help
+
+Preview without processing:
+  python main.py --input-dir ./images --output-dir ./pdfs --dry-run
+
+Enable debug visualization:
+  python main.py --input-dir ./images --output-dir ./pdfs --debug \
+                 --credentials-path ./service-account-key.json
+
+DOCUMENTATION:
+
+- First time? Read: QUICKSTART.md
+- Need details? Read: README.md
+- Understanding design? Read: ARCHITECTURE.md
+- Want examples? Read: EXAMPLES.md
+- Full feature list? Read: FEATURES.md
+- Confused? Read: INDEX.md
+
+WHAT IT DOES:
+
+1. Discovers TIFF and JPEG images
+ document group)
+3. Sends each image to Google Cloud Vision for OCR
+4. Extracts text with character-level bounding boxes
+5. Creates searchable PDFs with overlay text at precise coordinates
+6. Output: One PDF per group, fully searchable
+
+FEATURES:
+
+ Google Cloud Vision OCR integration
+ Character-level XY coordinate accuracy
+ TIFF & JPEG support
+ Searchable PDF overlay (invisible text)
+ Batch processing with progress tracking
+ Debug mode for accuracy verification
+ Comprehensive error handling
+ Full command-line interface
+
+NEXT:
+
+1. Read: QUICKSTART.md (5 minutes)
+2. Install: pip install -r requirements.txt
+3. Configure: Set up Google Cloud credentials
+4. Run: Try --dry-run first to see what will be processed
+5. Process: Run full pipeline with real credentials
+
+Questions?
+- Check EXAMPLES.md for specific use cases
+- See QUICKSTART.md for troubleshooting
+- Review FEATURES.md for capabilities
+
+ Start with QUICKSTART.md
+
+================================================================================
