@@ -28,6 +28,12 @@ DEFAULT_SHARED_FLAGS = [
     "--checkers", "8",
     "--retries", "3",
 ]
+# Filter flags: applied to both `rclone copy` and `rclone check` so that
+# whatever the copy skips, the check ignores too.
+# Add or remove exclusion patterns here as needed.
+DEFAULT_FILTER_FLAGS = [
+    "--exclude", "Thumbs.db",
+]
 # Copy-only: applied only to `rclone copy`
 DEFAULT_COPY_FLAGS = DEFAULT_SHARED_FLAGS + [
     "--progress",
@@ -100,13 +106,18 @@ def _drain(stream, log_fn, collect: list[str], live: bool) -> None:
 
 
 def run(cmd: list[str], label: str, log: logging.Logger,
-        stdout_path: Path | None = None) -> None:
+        stdout_path: Path | None = None,
+        is_copy: bool = False,
+        is_check: bool = False) -> None:
     """
     Run a shell command and stream its output live to the terminal and log.
     - stderr is always streamed live (rclone progress/stats).
     - stdout is streamed live to the terminal when stdout_path is None.
     - When stdout_path is given, stdout is written directly to that file
       without buffering in memory (used for md5sum on large trees).
+    - Set is_copy=True for `rclone copy` and is_check=True for `rclone check`
+      so that exit code 1 (completed with errors/differences) is distinguished
+      from higher exit codes (did not complete successfully).
     Exits the process immediately if the command returns a non-zero exit code.
     """
     log.info("=== %s ===", label)
@@ -120,10 +131,9 @@ def run(cmd: list[str], label: str, log: logging.Logger,
         with subprocess.Popen(cmd, stdout=stdout_dest, stderr=subprocess.PIPE,
                               text=True, bufsize=1) as proc:
             if stdout_path is None:
-                stdout_lines: list[str] = []
                 t_out = threading.Thread(
                     target=_drain,
-                    args=(proc.stdout, log.info, stdout_lines, True),
+                    args=(proc.stdout, log.info, [], True),
                 )
                 t_out.start()
             t_err = threading.Thread(
@@ -140,7 +150,35 @@ def run(cmd: list[str], label: str, log: logging.Logger,
             stdout_dest.close()
 
     if rc != 0:
-        log.error("FAILED (exit code %d) — aborting.", rc)
+        if is_copy and rc == 1:
+            log.error(
+                "Step 2 (copy) COMPLETED but some files failed to transfer (exit code 1). "
+                "rclone exits with code 1 when one or more files could not be copied after retries. "
+                "Review the output above for details.",
+            )
+        elif is_copy:
+            log.error(
+                "Step 2 (copy) DID NOT COMPLETE SUCCESSFULLY (exit code %d). "
+                "The copy encountered an unexpected error and may not have finished. "
+                "Review the output above for details.",
+                rc,
+            )
+        elif is_check and rc == 1:
+            log.error(
+                "Step 3 (check) COMPLETED but found mismatches (exit code 1). "
+                "The check phase ran to completion — rclone exits with code 1 "
+                "when differences or missing files are detected. "
+                "Review the output above for details.",
+            )
+        elif is_check:
+            log.error(
+                "Step 3 (check) DID NOT COMPLETE SUCCESSFULLY (exit code %d). "
+                "The check phase encountered an unexpected error and may not have finished. "
+                "Review the output above for details.",
+                rc,
+            )
+        else:
+            log.error("FAILED (exit code %d) — aborting.", rc)
         sys.exit(rc)
 
     log.info("OK\n")
@@ -157,12 +195,14 @@ def main() -> None:
     log, log_file = setup_logging(args.log_dir, args.dry_run, timestamp)
 
     dry_run_flags = ["--dry-run"] if args.dry_run else []
-    copy_flags    = DEFAULT_COPY_FLAGS + dry_run_flags + (args.extra_flags or [])
+    copy_flags    = DEFAULT_COPY_FLAGS + DEFAULT_FILTER_FLAGS + dry_run_flags + (args.extra_flags or [])
+    check_flags   = DEFAULT_SHARED_FLAGS + DEFAULT_FILTER_FLAGS + (args.extra_flags or [])
 
     log.info("rclone workflow starting%s", "  [DRY RUN — no files will be transferred]" if args.dry_run else "")
     log.info("  Source      : %s", args.source)
     log.info("  Destination : %s", args.destination)
     log.info("  Copy flags  : %s", " ".join(copy_flags))
+    log.info("  Check flags : %s", " ".join(check_flags))
     log.info("  Log file    : %s\n", log_file)
 
     # Step 1 — checksum the source before touching anything (skipped in dry run)
@@ -171,7 +211,7 @@ def main() -> None:
     else:
         checksum_file = (args.log_dir / f"rclone_{timestamp}.md5").resolve()
         run(
-            ["rclone", "md5sum", args.source],
+            ["rclone", "md5sum", args.source] + DEFAULT_FILTER_FLAGS,
             "Step 1: md5sum source",
             log,
             stdout_path=checksum_file,
@@ -183,6 +223,7 @@ def main() -> None:
         ["rclone", "copy", args.source, args.destination] + copy_flags,
         "Step 2: copy" + (" [DRY RUN]" if args.dry_run else ""),
         log,
+        is_copy=True,
     )
 
     # Step 3 — verify source and destination match (skipped in dry run)
@@ -190,10 +231,10 @@ def main() -> None:
         log.info("Step 3: check — skipped (dry run)\n")
     else:
         run(
-            ["rclone", "check", args.source, args.destination]
-            + DEFAULT_SHARED_FLAGS + (args.extra_flags or []),
+            ["rclone", "check", args.source, args.destination] + check_flags,
             "Step 3: check",
             log,
+            is_check=True,
         )
 
     log.info("Workflow complete%s. Log -> %s", " (dry run)" if args.dry_run else "", log_file)
