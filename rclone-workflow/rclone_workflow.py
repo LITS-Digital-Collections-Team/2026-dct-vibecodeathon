@@ -33,6 +33,7 @@ DEFAULT_SHARED_FLAGS = [
 # Add or remove exclusion patterns here as needed.
 DEFAULT_FILTER_FLAGS = [
     "--exclude", "Thumbs.db",
+    "--exclude", ".DS_Store",
 ]
 # Copy-only: applied only to `rclone copy`
 DEFAULT_COPY_FLAGS = DEFAULT_SHARED_FLAGS + [
@@ -195,8 +196,16 @@ def main() -> None:
     log, log_file = setup_logging(args.log_dir, args.dry_run, timestamp)
 
     dry_run_flags = ["--dry-run"] if args.dry_run else []
-    copy_flags    = DEFAULT_COPY_FLAGS + DEFAULT_FILTER_FLAGS + dry_run_flags + (args.extra_flags or [])
-    check_flags   = DEFAULT_SHARED_FLAGS + DEFAULT_FILTER_FLAGS + (args.extra_flags or [])
+
+    # Exclude this run's own log and checksum files so they don't cause false
+    # mismatches if log_dir happens to be inside the source tree.
+    run_exclusions = [
+        "--exclude", log_file.name,
+        "--exclude", f"rclone_{timestamp}.md5",
+    ]
+
+    copy_flags  = DEFAULT_COPY_FLAGS + DEFAULT_FILTER_FLAGS + run_exclusions + dry_run_flags + (args.extra_flags or [])
+    check_flags = DEFAULT_SHARED_FLAGS + DEFAULT_FILTER_FLAGS + run_exclusions + (args.extra_flags or [])
 
     log.info("rclone workflow starting%s", "  [DRY RUN — no files will be transferred]" if args.dry_run else "")
     log.info("  Source      : %s", args.source)
@@ -211,7 +220,7 @@ def main() -> None:
     else:
         checksum_file = (args.log_dir / f"rclone_{timestamp}.md5").resolve()
         run(
-            ["rclone", "md5sum", args.source] + DEFAULT_FILTER_FLAGS,
+            ["rclone", "md5sum", args.source] + DEFAULT_FILTER_FLAGS + run_exclusions,
             "Step 1: md5sum source",
             log,
             stdout_path=checksum_file,
