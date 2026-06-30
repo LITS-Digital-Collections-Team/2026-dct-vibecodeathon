@@ -19,19 +19,11 @@ Examples:
 """
 
 import argparse
-import shutil
-import subprocess
+import hashlib
 import sys
 import logging
-import threading
 from datetime import datetime
 from pathlib import Path
-
-
-DEFAULT_FLAGS = [
-    "--checkers", "8",
-    "--retries", "3",
-]
 
 LOG_DIR = Path(".")
 
@@ -48,8 +40,8 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("destination",       help="Destination path or rclone remote to checksum")
-    parser.add_argument("source_checksums",  help="Source checksum file (.md5) from rclone_workflow.py step 1")
+    parser.add_argument("destination",      help="Destination path to checksum")
+    parser.add_argument("source_checksums", help="Source checksum file (.md5) from rclone_workflow.py step 1")
     parser.add_argument(
         "--log-dir",
         type=Path,
@@ -57,8 +49,7 @@ def parse_args() -> argparse.Namespace:
         metavar="DIR",
         help="Directory for the destination checksum file and log (default: current directory)",
     )
-    args, extra_flags = parser.parse_known_args()
-    args.extra_flags = extra_flags
+    args, _ = parser.parse_known_args()
     return args
 
 
@@ -78,35 +69,56 @@ def setup_logging(log_dir: Path, timestamp: str) -> tuple[logging.Logger, Path]:
     return logging.getLogger(__name__), log_file
 
 
-def _drain(stream, log_fn: callable) -> None:
-    for line in iter(stream.readline, ""):
-        stripped = line.rstrip()
-        if stripped:
-            log_fn(stripped)
-    stream.close()
+def checksum_destination(
+    dest_root: str,
+    source_file: Path,
+    dest_checksum_file: Path,
+    log: logging.Logger,
+) -> int:
+    """
+    Compute MD5 checksums for each file listed in source_file by reading them
+    directly from dest_root using Python's hashlib.
 
+    Only the files that were copied (those in source_file) are read — the
+    destination directory is never enumerated and pre-existing content is never
+    touched.
 
-def run_md5sum(destination: str, dest_checksum_file: Path,
-               flags: list[str], log: logging.Logger) -> None:
-    cmd = ["rclone", "md5sum", destination] + flags
-    log.info("=== Step 1: md5sum destination ===")
-    log.info("Command: %s", " ".join(cmd))
+    Writes results to dest_checksum_file in rclone md5sum format.
+    Returns the count of files that could not be checksummed.
+    """
+    paths: list[str] = []
+    with open(source_file, "r", newline="") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            parts = line.split("  ", 1)
+            if len(parts) == 2:
+                paths.append(parts[1])
 
-    stdout_dest = open(dest_checksum_file, "w", newline="\n")
-    try:
-        with subprocess.Popen(cmd, stdout=stdout_dest, stderr=subprocess.PIPE,
-                              text=True, bufsize=1) as proc:
-            t_err = threading.Thread(target=_drain, args=(proc.stderr, log.info))
-            t_err.start()
-            t_err.join()
-            rc = proc.wait()
-    finally:
-        stdout_dest.close()
+    total = len(paths)
+    log.info("Computing MD5 checksums for %d destination files...", total)
+    dest  = Path(dest_root)
+    errors = 0
+    report_every = max(1, total // 100)   # log progress ~every 1%
 
-    if rc != 0:
-        log.error("md5sum destination DID NOT COMPLETE SUCCESSFULLY (exit code %d).", rc)
-        sys.exit(rc)
-    log.info("Destination checksums saved -> %s\n", dest_checksum_file)
+    with open(dest_checksum_file, "w", newline="\n") as out:
+        for i, rel_path in enumerate(paths, 1):
+            full_path = dest / Path(rel_path)
+            try:
+                h = hashlib.md5()
+                with open(full_path, "rb") as fh:
+                    while chunk := fh.read(4 * 1024 * 1024):
+                        h.update(chunk)
+                out.write(f"{h.hexdigest()}  {rel_path}\n")
+            except OSError as e:
+                log.warning("Cannot checksum %s: %s", rel_path, e)
+                errors += 1
+
+            if i % report_every == 0 or i == total:
+                log.info("  %d / %d files  (%d%%)...", i, total, i * 100 // total)
+
+    return errors
 
 
 def compare_checksums(source_file: Path, dest_file: Path, log: logging.Logger) -> None:
@@ -159,10 +171,6 @@ def compare_checksums(source_file: Path, dest_file: Path, log: logging.Logger) -
 
 
 def main() -> None:
-    if not shutil.which("rclone"):
-        print("ERROR: rclone not found on PATH. Install it from https://rclone.org/install/", file=sys.stderr)
-        sys.exit(1)
-
     args      = parse_args()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -183,23 +191,28 @@ def main() -> None:
 
     dest_checksum_file = (args.log_dir / f"verify_{timestamp}_dest.md5").resolve()
 
-    # Exclude the files this script generates so they don't appear as
-    # destination-only entries and distort the dest file count.
-    run_exclusions = [
-        "--exclude", log_file.name,
-        "--exclude", dest_checksum_file.name,
-    ]
-    flags = DEFAULT_FLAGS + run_exclusions + (args.extra_flags or [])
-
     log.info("verify_copy.py starting")
     log.info("  Destination         : %s", args.destination)
     log.info("  Source checksums    : %s", source_checksums)
     log.info("  Dest checksum file  : %s", dest_checksum_file)
-    log.info("  Flags               : %s", " ".join(flags))
     log.info("  Log file            : %s\n", log_file)
 
-    run_md5sum(args.destination, dest_checksum_file, flags, log)
+    print("\n[Step 1/2] Checksumming destination files (progress logged every 1%)...", flush=True)
+    log.info("=== Step 1: checksum destination ===")
+    errors = checksum_destination(args.destination, source_checksums, dest_checksum_file, log)
+    log.info("Destination checksums saved -> %s\n", dest_checksum_file)
+    print(f"[Step 1/2] Done. Destination checksums saved -> {dest_checksum_file}", flush=True)
+    if errors > 0:
+        log.warning(
+            "Step 1 completed with %d error(s) — some files could not be checksummed "
+            "(see above). The comparison will cover only the files that were "
+            "successfully hashed; results may be incomplete.",
+            errors,
+        )
+
+    print("\n[Step 2/2] Comparing checksums...", flush=True)
     compare_checksums(source_checksums, dest_checksum_file, log)
+    print("[Step 2/2] Done.", flush=True)
 
     log.info("Done. Log -> %s", log_file)
 

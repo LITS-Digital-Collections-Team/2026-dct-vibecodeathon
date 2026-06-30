@@ -56,7 +56,7 @@ Each run produces three timestamped files in the log directory (skipped in dry-r
 |---|---|
 | `rclone_YYYYMMDD_HHMMSS.log` | Full log of all steps and rclone output |
 | `rclone_YYYYMMDD_HHMMSS.md5` | MD5 checksums of the source tree, taken before the copy |
-| `rclone_YYYYMMDD_HHMMSS_dest.md5` | MD5 checksums of the destination tree, taken after the copy |
+| `rclone_YYYYMMDD_HHMMSS_dest.md5` | MD5 checksums of the copied files at the destination, taken after the copy |
 
 Dry runs produce `rclone_YYYYMMDD_HHMMSS_dryrun.log` only.
 
@@ -68,10 +68,13 @@ These are applied automatically and can be overridden via extra flags:
 
 | Flag | Applied to | Value | Purpose |
 |---|---|---|---|
-| `--checkers` | copy + verify | 8 | Parallel checksum goroutines |
-| `--retries` | copy + verify | 3 | Retry failed transfers |
+| `--checkers` | copy only | 8 | Parallel checksum goroutines |
+| `--retries` | copy only | 3 | Retry failed transfers |
+| `--stats` | copy only | 10s | Print progress every 10 seconds |
 | `--transfers` | copy only | 4 | Parallel file transfers |
 | `--progress` | copy only | — | Show live transfer stats |
+
+The destination verify step (step 3a) uses Python's `hashlib` directly and does not invoke rclone.
 
 ## verify_copy.py
 
@@ -100,11 +103,11 @@ python verify_copy.py \\libdata.hamilton.edu\Data\ rclone_20260611_114946.md5 --
 | File | Contents |
 |---|---|
 | `verify_YYYYMMDD_HHMMSS.log` | Full log of the verification run |
-| `verify_YYYYMMDD_HHMMSS_dest.md5` | MD5 checksums of the destination tree |
+| `verify_YYYYMMDD_HHMMSS_dest.md5` | MD5 checksums of the copied files at the destination |
 
 ### What it checks
 
-The script checksums the destination, then compares against the source checksum file. It reports:
+The script computes MD5 checksums directly using Python for each file listed in the source checksum file, reading them from the destination path. The destination directory is never enumerated and pre-existing content is never read. It reports:
 
 - Files present in the source checksums but **missing** from the destination
 - Files present in both but with **different hashes**
@@ -117,7 +120,9 @@ Files at the destination that are not in the source checksum file (e.g. pre-exis
 
 ## Behaviour on failure
 
-Any non-zero exit code from `rclone` causes the script to log the error and exit immediately with the same code, leaving the destination in whatever state it reached. The `.md5` checksum file can be used to audit the source after the fact.
+Steps 1 and 2 abort immediately on any non-zero rclone exit code, leaving the destination in whatever state it reached. The source `.md5` checksum file can be used to audit the source after the fact.
+
+Step 3a (destination checksum) continues to the comparison step even if some files could not be checksummed — a warning is logged and the comparison proceeds with whatever was successfully hashed. Step 3b (comparison) exits with code 1 if any files are missing or have hash mismatches.
 
 ## Attribution
 

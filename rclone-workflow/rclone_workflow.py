@@ -14,6 +14,7 @@ Examples:
 """
 
 import argparse
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,7 @@ from pathlib import Path
 DEFAULT_SHARED_FLAGS = [
     "--checkers", "8",
     "--retries", "3",
+    "--stats", "10s",
 ]
 # Filter flags: applied to `rclone copy` and the source md5sum so that
 # whatever the copy skips is also absent from the source checksums.
@@ -115,7 +117,8 @@ def _drain(stream, log_fn, collect: list[str], live: bool) -> None:
 def run(cmd: list[str], label: str, log: logging.Logger,
         stdout_path: Path | None = None,
         is_copy: bool = False,
-        is_check: bool = False) -> None:
+        is_check: bool = False,
+        warn_only: bool = False) -> int:
     """
     Run a shell command and stream its output live to the terminal and log.
     - stderr is always streamed live (rclone progress/stats).
@@ -125,7 +128,9 @@ def run(cmd: list[str], label: str, log: logging.Logger,
     - Set is_copy=True for `rclone copy` and is_check=True for `rclone md5sum`
       (destination verify step) so that exit code 1 (completed with errors) is
       distinguished from higher exit codes (did not complete successfully).
-    Exits the process immediately if the command returns a non-zero exit code.
+    - Set warn_only=True to log errors and return the exit code instead of
+      aborting, allowing the caller to decide how to proceed.
+    Returns the exit code. Exits the process on non-zero unless warn_only=True.
     """
     log.info("=== %s ===", label)
     log.info("Command: %s", " ".join(cmd))
@@ -187,9 +192,12 @@ def run(cmd: list[str], label: str, log: logging.Logger,
             )
         else:
             log.error("FAILED (exit code %d) — aborting.", rc)
+        if warn_only:
+            return rc
         sys.exit(rc)
 
     log.info("OK\n")
+    return 0
 
 
 # ── Checksum comparison ───────────────────────────────────────────────────────
@@ -254,6 +262,60 @@ def compare_checksums(source_file: Path, dest_file: Path, log: logging.Logger) -
         sys.exit(1)
 
 
+# ── Destination checksumming ──────────────────────────────────────────────────
+def checksum_destination(
+    dest_root: str,
+    source_file: Path,
+    dest_checksum_file: Path,
+    log: logging.Logger,
+) -> int:
+    """
+    Compute MD5 checksums for each file listed in source_file by reading them
+    directly from dest_root using Python's hashlib.
+
+    Only the files that were copied (those in source_file) are read — the
+    destination directory is never enumerated and pre-existing content is never
+    touched. This avoids the path-filtering limitations of rclone --files-from
+    on Windows/SMB paths.
+
+    Writes results to dest_checksum_file in rclone md5sum format.
+    Returns the count of files that could not be checksummed.
+    """
+    paths: list[str] = []
+    with open(source_file, "r", newline="") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            parts = line.split("  ", 1)
+            if len(parts) == 2:
+                paths.append(parts[1])
+
+    total = len(paths)
+    log.info("Computing MD5 checksums for %d destination files...", total)
+    dest  = Path(dest_root)
+    errors = 0
+    report_every = max(1, total // 100)   # log progress ~every 1%
+
+    with open(dest_checksum_file, "w", newline="\n") as out:
+        for i, rel_path in enumerate(paths, 1):
+            full_path = dest / Path(rel_path)
+            try:
+                h = hashlib.md5()
+                with open(full_path, "rb") as fh:
+                    while chunk := fh.read(4 * 1024 * 1024):
+                        h.update(chunk)
+                out.write(f"{h.hexdigest()}  {rel_path}\n")
+            except OSError as e:
+                log.warning("Cannot checksum %s: %s", rel_path, e)
+                errors += 1
+
+            if i % report_every == 0 or i == total:
+                log.info("  %d / %d files  (%d%%)...", i, total, i * 100 // total)
+
+    return errors
+
+
 # ── Workflow ──────────────────────────────────────────────────────────────────
 def main() -> None:
     if not shutil.which("rclone"):
@@ -286,17 +348,12 @@ def main() -> None:
         "--exclude", dest_checksum_file.name,
     ]
 
-    copy_flags   = DEFAULT_COPY_FLAGS + DEFAULT_FILTER_FLAGS + run_exclusions + dry_run_flags + (args.extra_flags or [])
-    # verify_flags are used for the destination md5sum (step 3a). run_exclusions
-    # are included so the log and checksum files don't appear in the dest checksums
-    # and trigger spurious "missing from source" errors in the comparison.
-    verify_flags = DEFAULT_SHARED_FLAGS + run_exclusions + (args.extra_flags or [])
+    copy_flags = DEFAULT_COPY_FLAGS + DEFAULT_FILTER_FLAGS + run_exclusions + dry_run_flags + (args.extra_flags or [])
 
     log.info("rclone workflow starting%s", "  [DRY RUN — no files will be transferred]" if args.dry_run else "")
     log.info("  Source              : %s", args.source)
     log.info("  Destination         : %s", args.destination)
     log.info("  Copy flags          : %s", " ".join(copy_flags))
-    log.info("  Verify flags        : %s", " ".join(verify_flags))
     log.info("  Source checksum file: %s", checksum_file)
     log.info("  Dest checksum file  : %s", dest_checksum_file)
     log.info("  Log file            : %s\n", log_file)
@@ -305,6 +362,7 @@ def main() -> None:
     if args.dry_run:
         log.info("Step 1: md5sum source — skipped (dry run)\n")
     else:
+        print("\n[Step 1/3] Checksumming source — this may take a while for large trees...", flush=True)
         run(
             ["rclone", "md5sum", args.source] + DEFAULT_FILTER_FLAGS + run_exclusions,
             "Step 1: md5sum source",
@@ -312,14 +370,17 @@ def main() -> None:
             stdout_path=checksum_file,
         )
         log.info("Checksums saved -> %s\n", checksum_file)
+        print(f"[Step 1/3] Done. Checksums saved -> {checksum_file}", flush=True)
 
     # Step 2 — copy source to destination
+    print("\n[Step 2/3] Copying files...", flush=True)
     run(
         ["rclone", "copy", args.source, args.destination] + copy_flags,
         "Step 2: copy" + (" [DRY RUN]" if args.dry_run else ""),
         log,
         is_copy=True,
     )
+    print("[Step 2/3] Done.", flush=True)
 
     # Step 3 — verify destination against pre-computed source checksums.
     # Step 3a checksums the destination (source is never re-read).
@@ -328,16 +389,22 @@ def main() -> None:
     if args.dry_run:
         log.info("Step 3: verify — skipped (dry run)\n")
     else:
-        run(
-            ["rclone", "md5sum", args.destination] + verify_flags,
-            "Step 3a: md5sum destination",
-            log,
-            stdout_path=dest_checksum_file,
-            is_check=True,
-        )
+        print("\n[Step 3a/3] Checksumming destination files (progress logged every 1%)...", flush=True)
+        log.info("=== Step 3a: checksum destination ===")
+        errors = checksum_destination(args.destination, checksum_file, dest_checksum_file, log)
         log.info("Destination checksums saved -> %s\n", dest_checksum_file)
+        print(f"[Step 3a/3] Done. Destination checksums saved -> {dest_checksum_file}", flush=True)
+        if errors > 0:
+            log.warning(
+                "Step 3a completed with %d error(s) — some destination files could not be "
+                "checksummed (see above). Step 3b will compare only the files that were "
+                "successfully hashed; results may be incomplete.",
+                errors,
+            )
 
+        print("\n[Step 3b/3] Comparing checksums...", flush=True)
         compare_checksums(checksum_file, dest_checksum_file, log)
+        print("[Step 3b/3] Done.", flush=True)
 
     log.info("Workflow complete%s. Log -> %s", " (dry run)" if args.dry_run else "", log_file)
 
