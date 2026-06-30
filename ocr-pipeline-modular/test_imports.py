@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Quick test to verify all modules and data classes."""
+
+import sys
+from pathlib import Path
+
+try:
+    # Test utils imports
+    from utils import (
+        CharBound, TextBlock, OCROutput, OCRDataHandler,
+        ensure_dir, get_output_filename, setup_logging,
+        validate_image_path
+    )
+     utils.py imports successful")print("
+
+    # Test data class creation
+    char = CharBound(char='A', x=10, y=20, width=12, height=20, confidence=0.95)
+    print( CharBound created: {char.char}")f"
+
+    block = TextBlock(
+        text="Test",
+        x=10, y=20, width=100, height=30,
+        chars=[char],
+        confidence=0.9
+    )
+    print( TextBlock created: {block.text}")f"
+
+    ocr_output = OCROutput(
+        image_path="test.jpg",
+        dimensions={"width": 1000, "height": 1200},
+        blocks=[block]
+    )
+    print( OCROutput created: {len(ocr_output.blocks)} block(s)")f"
+
+    # Test serialization
+    data_dict = ocr_output.to_dict()
+    print( OCROutput serialized to dict: {len(data_dict)} keys")f"
+
+    restored = OCROutput.from_dict(data_dict)
+    print( OCROutput deserialized from dict: {len(restored.blocks)} block(s)")f"
+
+    print("\ All module tests passed!")n
+
+except Exception as e:
+    print( Test failed: {e}")f"
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
