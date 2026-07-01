@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# Secrets
+.env
+
+# Pipeline output directories
+prep_output/
+ocr_output/
+corrected_output/
+pdf_output/
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
