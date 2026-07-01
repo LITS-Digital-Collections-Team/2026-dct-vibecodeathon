@@ -83,15 +83,27 @@ python main.py \
 ## How It Works
 
 1. **File Discovery**: Scans input directory for TIFF and JPEG images
- `document`)
+2. **Grouping**: Splits filenames on the split character (default `_`) and groups files with the same prefix — e.g. `doc_001.tif`, `doc_002.tif`, `doc_003.tif` all become pages in `doc.pdf`
 3. **OCR Processing**: For each image:
-   - Sends to Google Cloud Vision API
-   - Extracts text with character-level bounding boxes
-4. **PDF Generation**: 
-   - Creates PDF with image as background
-   - Overlays invisible searchable text at character positions
+   - Sends to Google Cloud Vision API (`document_text_detection`)
+   - Extracts text with character-level bounding boxes (x/y, width, height per symbol)
+4. **PDF Generation**:
+   - Creates PDF with image as background at native resolution
+   - Overlays invisible searchable text at exact GCV coordinates
    - Ensures text placement matches detected coordinates
 5. **Output**: Saves one PDF per image group
+
+## Code Structure
+
+| Symbol | File:Line | Purpose |
+|---|---|---|
+| `GoogleCloudVisionOCR` | `main.py:66` | Wraps the GCV client; handles auth and parses symbol-level bounding boxes |
+| `TextBound` | `main.py:46` | Dataclass holding per-character coordinate data (x, y, width, height, text) |
+| `TextLine` | `main.py:56` | Dataclass holding per-paragraph text and its constituent `TextBound` list |
+| `group_image_files()` | `main.py:195` | Groups files by prefix before the split character |
+| `render_text_overlay()` | `main.py:261` | Places invisible (or debug-visible) text on a PyMuPDF page at GCV coordinates |
+| `create_pdf_from_images_with_ocr()` | `main.py:297` | Orchestrates image loading → OCR → PDF page creation for one group |
+| `process_image_groups()` | `main.py:356` | Top-level loop over all groups; supports `--dry-run` |
 
 ## Text Overlay Precision
 
@@ -138,6 +150,12 @@ output_dir/
 - Ensure output directory exists and is writable
 - Check disk space for large batches
 - Verify PIL can handle image format
+
+## Known Issues
+
+### BytesIO cursor not reset before `fitz.Pixmap` (`main.py:326–327`)
+
+The image is written to a `BytesIO` buffer and then `.read()` is called on it (advancing the cursor to the end). The buffer is then passed directly to `fitz.Pixmap()` without calling `.seek(0)` first, so PyMuPDF receives an empty stream and will raise an error. Fix: add `image_bytes.seek(0)` before constructing the `Pixmap`.
 
 ## License
 
