@@ -42,6 +42,9 @@ pdfs/
 output/
 *.pdf
 
+# Local test fixtures (large binaries, not tracked)
+stress-test/
+
 # Cache
 .DS_Store
 *.cache
