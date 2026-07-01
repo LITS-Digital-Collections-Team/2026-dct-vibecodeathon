@@ -27,7 +27,10 @@ OCR JSON → Claude Review            Image + OCR → Searchable PDF
    - Output: JPG images + JSON metadata
 
 2. **OCR Extraction** - Extract text with character-level coordinates
-   - Supports Tesseract (local, no API key) or Google Cloud Vision (API)
+   - Default "auto" mode runs Tesseract (local, no API key) first and only
+     escalates to Google Cloud Vision (API) when Tesseract's confidence is
+     below threshold — keeps the common case free and local
+   - Can also be forced to always use Tesseract or always use GCV
    - Returns text blocks with exact pixel coordinates
    - Includes confidence scores
    - Output: JSON with full OCR data including character bounds
@@ -105,7 +108,7 @@ cp .env.example .env
 # Step 1: Prepare images
 python 01_image_prep.py --input-dir ./raw_images --output-dir ./prep_output
 
-# Step 2: Extract text
+# Step 2: Extract text (auto: Tesseract first, GCV only if confidence is low)
 python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output
 
 # Step 3: Correct text
@@ -143,13 +146,22 @@ python 01_image_prep.py --help
 
 #### Step 2: OCR Extraction
 
-Extract text with coordinates using Tesseract or Google Cloud Vision:
+Extract text with coordinates using Tesseract, Google Cloud Vision, or an
+auto cascade of both:
 
 ```bash
-# Using Tesseract (default, no API key needed)
+# Auto cascade (default): try Tesseract first, escalate to GCV only if
+# Tesseract's average confidence is below --confidence-threshold (0.75)
 python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output
 
-# Using Google Cloud Vision
+# Auto cascade with a stricter threshold (escalates to GCV more often)
+python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output \
+  --engine auto --confidence-threshold 0.85
+
+# Force Tesseract only, never call GCV
+python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output --engine tesseract
+
+# Force Google Cloud Vision for every image
 python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output --engine gcv
 
 # Dry run (extract without saving)
@@ -161,6 +173,23 @@ python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output --v
 # Help
 python 02_ocr_extract.py --help
 ```
+
+**How auto cascade works:**
+1. Run Tesseract locally (free, no network call)
+2. Compute the average confidence across detected text blocks (word-level
+   confidences averaged per block, then averaged across blocks)
+3. If confidence ≥ `--confidence-threshold` (default `0.75`), keep the
+   Tesseract result
+4. Otherwise, call Google Cloud Vision and use its result instead
+5. If GCV is unavailable (no credentials/library) when escalation is
+   needed, the Tesseract result is kept and the failure is logged rather
+   than aborting the batch
+
+Each output JSON's `metadata` includes `cascade_decision`
+(`tesseract_accepted`, `gcv_fallback`, or `gcv_fallback_failed`) and
+`tesseract_confidence`, so you can audit which engine actually produced
+each file. A per-run summary (`Cascade summary: N/M resolved by Tesseract, ...`)
+is logged after batch processing.
 
 **Output:**
 - `image_ocr.json` - Full OCR data with character-level coordinates

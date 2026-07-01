@@ -2,12 +2,16 @@
 """
 Step 2: OCR Extraction - Extract text with character-level coordinates.
 
-Extracts text from images using Tesseract (local) or Google Cloud Vision (API).
-Saves complete OCR output with character-level bounding boxes and confidence scores.
+Extracts text from images using Tesseract (local), Google Cloud Vision (API),
+or "auto" cascade mode (default): try Tesseract first, and only call GCV when
+Tesseract's confidence is below threshold. Saves complete OCR output with
+character-level bounding boxes and confidence scores.
 
 Usage:
     python 02_ocr_extract.py --input image.jpg --output-dir ./ocr_output
     python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output
+    python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output \\
+        --engine auto --confidence-threshold 0.8
     python 02_ocr_extract.py --input image.jpg --output-dir ./ocr_output --engine gcv --dry-run
 """
 
@@ -62,8 +66,9 @@ class TesseractOCR:
         logger.info(f"Extracting text from {image_path}")
 
         try:
-            # Get detailed data from Tesseract
-            data = self.pytesseract.image_to_data(image_path, output_type=self.pytesseract.Output.DICT)
+            # Pass the already-opened PIL Image, not the Path — pytesseract
+            # doesn't accept Path objects on this API.
+            data = self.pytesseract.image_to_data(img, output_type=self.pytesseract.Output.DICT)
 
             blocks = []
             text_dict = data
@@ -73,7 +78,8 @@ class TesseractOCR:
             for block_num in sorted(block_indices):
                 block_text = ""
                 block_chars = []
-                block_conf = 0
+                block_conf_sum = 0
+                block_conf_count = 0
                 block_x, block_y = float('inf'), float('inf')
                 block_x2, block_y2 = 0, 0
 
@@ -92,7 +98,8 @@ class TesseractOCR:
                     h = int(text_dict['height'][i])
 
                     block_text += text + " "
-                    block_conf = max(block_conf, conf)
+                    block_conf_sum += conf
+                    block_conf_count += 1
                     block_x = min(block_x, x)
                     block_y = min(block_y, y)
                     block_x2 = max(block_x2, x + w)
@@ -113,6 +120,9 @@ class TesseractOCR:
                 if block_text.strip():
                     block_width = block_x2 - block_x
                     block_height = block_y2 - block_y
+                    # Mean (not max) word confidence, so one confident word can't
+                    # mask a block that's mostly garbled.
+                    block_conf = block_conf_sum / block_conf_count if block_conf_count else 0
 
                     text_block = TextBlock(
                         text=block_text.strip(),
@@ -272,20 +282,86 @@ class GoogleCloudVisionOCR:
             raise
 
 
+class CascadeOCR:
+    """Run Tesseract first; only call Google Cloud Vision if Tesseract's
+    confidence is too low. Keeps the common case free and local, and only
+    pays for the GCV API call when it's actually needed.
+    """
+
+    def __init__(self, confidence_threshold: float = 0.75):
+        """Initialize cascade OCR.
+
+        Args:
+            confidence_threshold: Minimum average Tesseract block confidence
+                (0-1) to accept the Tesseract result. Below this, fall back
+                to Google Cloud Vision.
+        """
+        self.confidence_threshold = confidence_threshold
+        self.tesseract = TesseractOCR()
+        self._gcv = None  # Lazily initialized so GCV credentials aren't required unless needed.
+
+    @property
+    def gcv(self) -> "GoogleCloudVisionOCR":
+        if self._gcv is None:
+            self._gcv = GoogleCloudVisionOCR()
+        return self._gcv
+
+    def extract_text(self, image_path: Path) -> OCROutput:
+        """Extract text, escalating to GCV only when Tesseract looks unreliable.
+
+        Args:
+            image_path: Path to image file
+
+        Returns:
+            OCROutput from Tesseract or GCV, whichever was used
+        """
+        tesseract_result = self.tesseract.extract_text(image_path)
+        tesseract_confidence = tesseract_result.metadata.get("avg_confidence", 0)
+
+        if tesseract_confidence >= self.confidence_threshold:
+            logger.info(
+                f"Tesseract confidence {tesseract_confidence:.2f} >= threshold "
+                f"{self.confidence_threshold:.2f}; skipping GCV"
+            )
+            tesseract_result.metadata["cascade_decision"] = "tesseract_accepted"
+            tesseract_result.metadata["tesseract_confidence"] = tesseract_confidence
+            return tesseract_result
+
+        logger.info(
+            f"Tesseract confidence {tesseract_confidence:.2f} < threshold "
+            f"{self.confidence_threshold:.2f}; falling back to Google Cloud Vision"
+        )
+        try:
+            gcv_result = self.gcv.extract_text(image_path)
+            gcv_result.metadata["cascade_decision"] = "gcv_fallback"
+            gcv_result.metadata["tesseract_confidence"] = tesseract_confidence
+            return gcv_result
+        except Exception as e:
+            logger.error(f"GCV fallback failed ({e}); keeping Tesseract result")
+            tesseract_result.metadata["cascade_decision"] = "gcv_fallback_failed"
+            tesseract_result.metadata["tesseract_confidence"] = tesseract_confidence
+            tesseract_result.metadata["gcv_error"] = str(e)
+            return tesseract_result
+
+
 class OCRExtractor:
     """Unified OCR extraction interface."""
 
-    def __init__(self, engine: str = "tesseract"):
+    def __init__(self, engine: str = "auto", confidence_threshold: float = 0.75):
         """Initialize extractor with specified engine.
 
         Args:
-            engine: OCR engine ("tesseract" or "gcv")
+            engine: OCR engine ("auto", "tesseract", or "gcv"). "auto" runs
+                Tesseract first and only escalates to GCV on low confidence.
+            confidence_threshold: Used by "auto" mode; see CascadeOCR.
         """
         self.engine = engine
         if engine == "tesseract":
             self.ocr = TesseractOCR()
         elif engine == "gcv":
             self.ocr = GoogleCloudVisionOCR()
+        elif engine == "auto":
+            self.ocr = CascadeOCR(confidence_threshold=confidence_threshold)
         else:
             raise ValueError(f"Unknown engine: {engine}")
 
@@ -336,6 +412,13 @@ class OCRExtractor:
                 logger.error(f"Error processing {image_path}: {e}")
                 continue
 
+        if self.engine == "auto" and results:
+            gcv_count = sum(1 for r in results if r.metadata.get("cascade_decision") == "gcv_fallback")
+            logger.info(
+                f"Cascade summary: {len(results) - gcv_count}/{len(results)} resolved by Tesseract, "
+                f"{gcv_count}/{len(results)} escalated to GCV"
+            )
+
         return results
 
 
@@ -346,11 +429,18 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Single image with Tesseract (default)
-  python 02_ocr_extract.py --input image.jpg --output-dir ./ocr_output
+  # Auto cascade (default): Tesseract first, GCV only if confidence is low
+  python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output
 
-  # Batch processing with Google Cloud Vision
+  # Force Tesseract only (no GCV fallback)
+  python 02_ocr_extract.py --input image.jpg --output-dir ./ocr_output --engine tesseract
+
+  # Force Google Cloud Vision for every image
   python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output --engine gcv
+
+  # Auto cascade with a stricter confidence threshold
+  python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output \\
+    --engine auto --confidence-threshold 0.85
 
   # Dry run to test without saving
   python 02_ocr_extract.py --input image.jpg --output-dir ./ocr_output --dry-run
@@ -364,8 +454,14 @@ Examples:
     parser.add_argument("--input-dir", type=Path, help="Input directory with images")
     parser.add_argument("--output-dir", type=Path, required=True, help="Output directory for OCR JSON")
     parser.add_argument(
-        "--engine", choices=["tesseract", "gcv"], default="tesseract",
-        help="OCR engine to use (default: tesseract)"
+        "--engine", choices=["auto", "tesseract", "gcv"], default="auto",
+        help="OCR engine: 'auto' tries Tesseract first and escalates to GCV only on low "
+             "confidence (default), or force 'tesseract'/'gcv'"
+    )
+    parser.add_argument(
+        "--confidence-threshold", type=float, default=0.75,
+        help="Minimum average Tesseract confidence (0-1) to accept its result in 'auto' "
+             "mode before falling back to GCV (default: 0.75)"
     )
     parser.add_argument("--dry-run", action="store_true", help="Extract without saving files")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
@@ -383,7 +479,7 @@ Examples:
         parser.error("Cannot specify both --input and --input-dir")
 
     try:
-        extractor = OCRExtractor(engine=args.engine)
+        extractor = OCRExtractor(engine=args.engine, confidence_threshold=args.confidence_threshold)
 
         if not args.dry_run:
             output_dir = ensure_dir(args.output_dir)

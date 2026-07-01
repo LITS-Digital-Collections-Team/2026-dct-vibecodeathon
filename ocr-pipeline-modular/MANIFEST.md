@@ -96,7 +96,8 @@ Production-grade modular OCR pipeline with 4 independent steps for converting do
  Error handling and logging- 
 
 ### Step 2: OCR Extraction
- Tesseract OCR (default, no API needed)- 
+ Auto cascade: Tesseract first, GCV only on low confidence (default)- 
+ Tesseract OCR (local, no API needed)- 
  Google Cloud Vision (optional, API-based)- 
  Character-level coordinate extraction- 
  Confidence scoring- 
