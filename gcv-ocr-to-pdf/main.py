@@ -21,16 +21,15 @@ Usage:
 import os
 import sys
 import argparse
-import json
 import traceback
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Optional
 from collections import defaultdict
 from dataclasses import dataclass
 from io import BytesIO
 
 import fitz  # PyMuPDF
-from PIL import Image, ImageSequence, ImageDraw
+from PIL import Image, ImageSequence
 from tqdm import tqdm
 
 try:
@@ -226,7 +225,7 @@ def extract_frames_from_tiff(image_path: str) -> List[Image.Image]:
     frames = []
     try:
         img = Image.open(image_path)
-        for i, frame in enumerate(ImageSequence.Iterator(img)):
+        for frame in ImageSequence.Iterator(img):
             frame_copy = frame.convert('RGB')
             frames.append(frame_copy)
     except Exception as e:
