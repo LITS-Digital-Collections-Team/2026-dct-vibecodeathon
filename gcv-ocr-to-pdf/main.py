@@ -323,7 +323,7 @@ def create_pdf_from_images_with_ocr(image_paths: List[str],
             image_bytes.seek(0)
 
             img_data = image_bytes.read()
-            pixmap = fitz.Pixmap(image_bytes)
+            pixmap = fitz.Pixmap(img_data)
             img_rect = fitz.Rect(pixmap.irect)
             page = doc.new_page(width=img_rect.width, height=img_rect.height)
 

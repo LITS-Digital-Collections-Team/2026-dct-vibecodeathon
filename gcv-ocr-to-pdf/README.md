@@ -151,12 +151,6 @@ output_dir/
 - Check disk space for large batches
 - Verify PIL can handle image format
 
-## Known Issues
-
-### BytesIO cursor not reset before `fitz.Pixmap` (`main.py:326–327`)
-
-The image is written to a `BytesIO` buffer and then `.read()` is called on it (advancing the cursor to the end). The buffer is then passed directly to `fitz.Pixmap()` without calling `.seek(0)` first, so PyMuPDF receives an empty stream and will raise an error. Fix: add `image_bytes.seek(0)` before constructing the `Pixmap`.
-
 ## License
 
 This script was created with assistance from GitHub Copilot.
