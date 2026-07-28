@@ -19,6 +19,7 @@ Usage:
 """
 
 import os
+import re
 import sys
 import argparse
 import traceback
@@ -188,30 +189,38 @@ def ensure_dir(path: str) -> None:
 
 def list_image_files(input_dir: str) -> List[str]:
     """List all TIFF and JPEG files in directory.
-    
+
     Args:
         input_dir: Directory path to search
-        
+
     Returns:
         Sorted list of image file paths
     """
     extensions = {'.tif', '.tiff', '.jpg', '.jpeg'}
-    files = []
-    
-    for ext in extensions:
-        files.extend(Path(input_dir).glob(f'*{ext}'))
-        files.extend(Path(input_dir).glob(f'*{ext.upper()}'))
-    
-    return sorted([str(f) for f in files])
+    files = [
+        str(f) for f in Path(input_dir).iterdir()
+        if f.is_file() and f.suffix.lower() in extensions
+    ]
+
+    return sorted(files)
+
+
+def _natural_sort_key(file_path: str) -> list:
+    """Split a filename into text/number chunks so digit runs compare
+    numerically (e.g. 'doc_2' sorts before 'doc_10') instead of lexically.
+    """
+    name = Path(file_path).stem
+    return [int(chunk) if chunk.isdigit() else chunk.lower()
+            for chunk in re.split(r'(\d+)', name)]
 
 
 def group_image_files(files: List[str], split_char: str = '_') -> Dict[str, List[str]]:
     """Group image files by prefix before split character.
-    
+
     Args:
         files: List of file paths
         split_char: Character to split on for grouping
-        
+
     Returns:
         Dictionary mapping group name to list of files
     """
@@ -220,10 +229,10 @@ def group_image_files(files: List[str], split_char: str = '_') -> Dict[str, List
         basename = Path(f).stem
         group_key = basename.split(split_char)[0]
         groups[group_key].append(f)
-    
+
     for group_files in groups.values():
-        group_files.sort()
-    
+        group_files.sort(key=_natural_sort_key)
+
     return dict(groups)
 
 
