@@ -11,11 +11,11 @@ try:
         ensure_dir, get_output_filename, setup_logging,
         validate_image_path
     )
-     utils.py imports successful")print("
+    print("utils.py imports successful")
 
     # Test data class creation
     char = CharBound(char='A', x=10, y=20, width=12, height=20, confidence=0.95)
-    print( CharBound created: {char.char}")f"
+    print(f"CharBound created: {char.char}")
 
     block = TextBlock(
         text="Test",
@@ -23,26 +23,26 @@ try:
         chars=[char],
         confidence=0.9
     )
-    print( TextBlock created: {block.text}")f"
+    print(f"TextBlock created: {block.text}")
 
     ocr_output = OCROutput(
         image_path="test.jpg",
         dimensions={"width": 1000, "height": 1200},
         blocks=[block]
     )
-    print( OCROutput created: {len(ocr_output.blocks)} block(s)")f"
+    print(f"OCROutput created: {len(ocr_output.blocks)} block(s)")
 
     # Test serialization
     data_dict = ocr_output.to_dict()
-    print( OCROutput serialized to dict: {len(data_dict)} keys")f"
+    print(f"OCROutput serialized to dict: {len(data_dict)} keys")
 
     restored = OCROutput.from_dict(data_dict)
-    print( OCROutput deserialized from dict: {len(restored.blocks)} block(s)")f"
+    print(f"OCROutput deserialized from dict: {len(restored.blocks)} block(s)")
 
-    print("\ All module tests passed!")n
+    print("\nAll module tests passed!")
 
 except Exception as e:
-    print( Test failed: {e}")f"
+    print(f"Test failed: {e}")
     import traceback
     traceback.print_exc()
     sys.exit(1)

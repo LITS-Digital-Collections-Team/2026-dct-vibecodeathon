@@ -73,19 +73,11 @@ class PDFAssembler:
 
             # Insert image
             try:
-                # Create a rectangle for the page
-                rect = fitz.Rect(0, 0, pdf_width, pdf_height)
-                pix = fitz.Pixmap.frombytes(None, (img_width, img_height), b'', 3)
-
-                # Load image and insert
-                img = fitz.Pixmap(image_path)
                 img_rect = fitz.Rect(0, 0, pdf_width, pdf_height)
-                page.insert_image(img_rect, pixmap=img)
-
+                pix = fitz.Pixmap(image_path)
+                page.insert_image(img_rect, pixmap=pix)
             except Exception as e:
-                logger.warning(f"Could not insert image directly: {e}, using PDF stream approach")
-                # Fallback: create image from pixels
-                pass
+                logger.warning(f"Could not insert image {image_path}: {e}")
 
             # Add text layer (invisible and searchable)
             for block in ocr_output.blocks:
@@ -106,24 +98,37 @@ class PDFAssembler:
                     est_font_size = font_size
 
                 try:
-                    # Insert text - make it very light/invisible by using same color as background
-                    page.insert_textbox(
-                        text_rect,
-                        text,
-                        fontsize=est_font_size,
-                        color=(1, 1, 1),  # White text (invisible on white background)
-                        align=fitz.TEXT_ALIGN_LEFT,
-                        clip=text_rect
-                    )
+                    # Insert text as a genuinely invisible (render_mode=3) text
+                    # layer. insert_textbox doesn't fit if the requested font
+                    # size leaves no room for line height within text_rect
+                    # (returns a negative fit code rather than raising), so
+                    # shrink the font until it fits or hits a floor.
+                    size = est_font_size
+                    fitted = False
+                    while size >= 4:
+                        rc = page.insert_textbox(
+                            text_rect,
+                            text,
+                            fontsize=size,
+                            align=fitz.TEXT_ALIGN_LEFT,
+                            render_mode=3,
+                        )
+                        if rc >= 0:
+                            fitted = True
+                            break
+                        size -= 1
+
+                    if not fitted:
+                        logger.warning(f"Text did not fit block rect even at minimum font size, skipped: {text[:50]!r}")
 
                     if self.debug:
                         # Draw red bounding box for debugging
-                        page.draw_rect(text_rect, color=fitz.pdfcolor.red, width=1)
+                        page.draw_rect(text_rect, color=fitz.pdfcolor["red"], width=1)
                         page.insert_text(
                             (x, y - 5),
                             f"[{block.confidence:.2f}]",
                             fontsize=6,
-                            color=fitz.pdfcolor.red
+                            color=fitz.pdfcolor["red"]
                         )
 
                 except Exception as e:
