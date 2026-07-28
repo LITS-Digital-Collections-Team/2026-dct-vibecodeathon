@@ -84,26 +84,27 @@ python main.py \
 
 1. **File Discovery**: Scans input directory for TIFF and JPEG images
 2. **Grouping**: Splits filenames on the split character (default `_`) and groups files with the same prefix — e.g. `doc_001.tif`, `doc_002.tif`, `doc_003.tif` all become pages in `doc.pdf`
-3. **OCR Processing**: For each image:
+3. **OCR Processing**: For each image page (a multi-frame TIFF's frames are each OCR'd individually, since GCV only annotates one page per request):
    - Sends to Google Cloud Vision API (`document_text_detection`)
    - Extracts text with character-level bounding boxes (x/y, width, height per symbol)
 4. **PDF Generation**:
-   - Creates PDF with image as background at native resolution
-   - Overlays invisible searchable text at exact GCV coordinates
-   - Ensures text placement matches detected coordinates
+   - Creates one PDF page per image page, sized in points from the image's DPI metadata (default `300` DPI if absent) so pages match their real physical size
+   - Overlays invisible (`render_mode=3`), searchable text scaled to the same DPI so it lines up with the visible image
 5. **Output**: Saves one PDF per image group
 
 ## Code Structure
 
 | Symbol | File:Line | Purpose |
 |---|---|---|
-| `GoogleCloudVisionOCR` | `main.py:66` | Wraps the GCV client; handles auth and parses symbol-level bounding boxes |
-| `TextBound` | `main.py:46` | Dataclass holding per-character coordinate data (x, y, width, height, text) |
-| `TextLine` | `main.py:56` | Dataclass holding per-paragraph text and its constituent `TextBound` list |
-| `group_image_files()` | `main.py:195` | Groups files by prefix before the split character |
-| `render_text_overlay()` | `main.py:261` | Places invisible (or debug-visible) text on a PyMuPDF page at GCV coordinates |
-| `create_pdf_from_images_with_ocr()` | `main.py:297` | Orchestrates image loading → OCR → PDF page creation for one group |
-| `process_image_groups()` | `main.py:356` | Top-level loop over all groups; supports `--dry-run` |
+| `GoogleCloudVisionOCR` | `main.py:65` | Wraps the GCV client; handles auth and parses symbol-level bounding boxes |
+| `TextBound` | `main.py:45` | Dataclass holding per-character coordinate data (x, y, width, height, text) |
+| `TextLine` | `main.py:55` | Dataclass holding per-paragraph text and its constituent `TextBound` list |
+| `group_image_files()` | `main.py:208` | Groups files by prefix before the split character |
+| `load_image_pages()` | `main.py:253` | Loads every frame of a TIFF (or the single page of other formats) as PIL Images |
+| `get_image_dpi()` | `main.py:270` | Reads DPI from image metadata, falling back to `DEFAULT_DPI` |
+| `render_text_overlay()` | `main.py:294` | Places invisible (or debug-visible) text on a PyMuPDF page at GCV coordinates |
+| `create_pdf_from_images_with_ocr()` | `main.py:325` | Orchestrates image loading → per-page OCR → PDF page creation for one group |
+| `process_image_groups()` | `main.py:401` | Top-level loop over all groups; supports `--dry-run` |
 
 ## Text Overlay Precision
 

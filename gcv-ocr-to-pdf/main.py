@@ -81,16 +81,30 @@ class GoogleCloudVisionOCR:
 
     def extract_text_with_bounds(self, image_path: str) -> List[TextLine]:
         """Extract text and character-level bounding boxes from image using GCV.
-        
+
         Args:
             image_path: Path to image file (TIFF or JPEG)
-            
+
         Returns:
             List of TextLine objects with character-level bounds
         """
         with open(image_path, 'rb') as image_file:
             content = image_file.read()
 
+        return self.extract_text_with_bounds_from_bytes(content)
+
+    def extract_text_with_bounds_from_bytes(self, content: bytes) -> List[TextLine]:
+        """Extract text and character-level bounding boxes from raw image bytes using GCV.
+
+        Used for individual TIFF frames, which must be sent to GCV one at a
+        time since document_text_detection only annotates a single page.
+
+        Args:
+            content: Encoded image bytes (e.g. PNG)
+
+        Returns:
+            List of TextLine objects with character-level bounds
+        """
         image = vision.Image(content=content)
         response = self.client.document_text_detection(image=image)
 
@@ -236,25 +250,45 @@ def extract_frames_from_tiff(image_path: str) -> List[Image.Image]:
     return frames
 
 
-def image_to_pil(image_path: str) -> Image.Image:
-    """Load image file as PIL Image.
-    
+def load_image_pages(image_path: str) -> List[Image.Image]:
+    """Load every page/frame of an image file as PIL Images.
+
     Args:
         image_path: Path to image file
-        
+
     Returns:
-        PIL Image object
+        List of PIL Image objects — one per TIFF frame, or a single-item
+        list for other formats. Empty if the image could not be loaded.
     """
     try:
         img = Image.open(image_path)
         if img.format == 'TIFF':
-            frames = extract_frames_from_tiff(image_path)
-            return frames[0] if frames else None
-        else:
-            return img.convert('RGB')
+            return extract_frames_from_tiff(image_path)
+        return [img.convert('RGB')]
     except Exception as e:
         print(f"Error loading image {image_path}: {e}")
-        return None
+        return []
+
+
+DEFAULT_DPI = 300.0
+
+
+def get_image_dpi(pil_image: Image.Image) -> float:
+    """Get the image's horizontal DPI from its metadata.
+
+    Falls back to DEFAULT_DPI for scans without embedded resolution
+    metadata, since pixel dimensions alone don't imply a physical size.
+
+    Args:
+        pil_image: PIL Image object
+
+    Returns:
+        Horizontal DPI as a float
+    """
+    dpi = pil_image.info.get('dpi')
+    if dpi and dpi[0]:
+        return float(dpi[0])
+    return DEFAULT_DPI
 
 
 def render_text_overlay(page, text_lines: List[TextLine], 
@@ -284,13 +318,8 @@ def render_text_overlay(page, text_lines: List[TextLine],
                 page.insert_font(fontname="helv")
                 page.insert_text((x, y - 2), bound.text, fontsize=8, color=(1, 0, 0))
 
-            try:
-                page.set_textbox(rect, bound.text, fontsize=max(8, h * 0.8), 
-                                fontname="helv", color=None, text_flags=0)
-            except Exception:
-                pass
-
-            page.insert_text((x, y), bound.text, fontsize=1, opacity=0)
+            page.insert_text((x, y + h), bound.text, fontsize=max(1, h),
+                            fontname="helv", render_mode=3)
 
 
 def create_pdf_from_images_with_ocr(image_paths: List[str], 
@@ -312,30 +341,47 @@ def create_pdf_from_images_with_ocr(image_paths: List[str],
 
     for image_path in image_paths:
         try:
-            pil_image = image_to_pil(image_path)
-            if pil_image is None:
+            pil_pages = load_image_pages(image_path)
+            if not pil_pages:
                 print(f"Skipping {image_path}: could not load")
                 continue
 
-            image_bytes = BytesIO()
-            pil_image.save(image_bytes, format='PNG')
-            image_bytes.seek(0)
-
-            img_data = image_bytes.read()
-            pixmap = fitz.Pixmap(img_data)
-            img_rect = fitz.Rect(pixmap.irect)
-            page = doc.new_page(width=img_rect.width, height=img_rect.height)
-
-            page.insert_image(img_rect, stream=img_data, pixmap=pixmap)
-
             print(f"Extracting OCR from {Path(image_path).name}...")
-            text_lines = ocr_client.extract_text_with_bounds(image_path)
+            multi_page = len(pil_pages) > 1
 
-            if text_lines:
-                render_text_overlay(page, text_lines, scale_factor=1.0, debug=debug)
-                print(f"  Found {len(text_lines)} text lines")
-            else:
-                print(f"  No text detected")
+            for page_index, pil_image in enumerate(pil_pages):
+                image_bytes = BytesIO()
+                pil_image.save(image_bytes, format='PNG')
+                image_bytes.seek(0)
+                img_data = image_bytes.read()
+
+                pixmap = fitz.Pixmap(img_data)
+
+                # GCV coordinates are in source pixels; PDF page dimensions
+                # are in points (1/72"), so both must be scaled by the
+                # image's DPI to produce a correctly sized, aligned page.
+                scale_factor = 72.0 / get_image_dpi(pil_image)
+                page_width = pixmap.width * scale_factor
+                page_height = pixmap.height * scale_factor
+                page_rect = fitz.Rect(0, 0, page_width, page_height)
+
+                page = doc.new_page(width=page_width, height=page_height)
+                page.insert_image(page_rect, pixmap=pixmap)
+
+                # document_text_detection only annotates a single page, so
+                # multi-frame TIFFs need OCR run per-frame on that frame's
+                # own bytes; single-page images can reuse the source file.
+                if multi_page:
+                    text_lines = ocr_client.extract_text_with_bounds_from_bytes(img_data)
+                else:
+                    text_lines = ocr_client.extract_text_with_bounds(image_path)
+
+                label = f"{Path(image_path).name} (frame {page_index + 1}/{len(pil_pages)})" if multi_page else Path(image_path).name
+                if text_lines:
+                    render_text_overlay(page, text_lines, scale_factor=scale_factor, debug=debug)
+                    print(f"  {label}: found {len(text_lines)} text lines")
+                else:
+                    print(f"  {label}: no text detected")
 
         except Exception as e:
             print(f"Error processing {image_path}: {e}")
