@@ -118,6 +118,32 @@ python 03_text_correct.py --input-dir ./ocr_output --output-dir ./corrected_outp
 python 04_pdf_assemble.py --image-dir ./prep_output --ocr-dir ./corrected_output --output-dir ./pdf_output
 ```
 
+### GUI
+
+A PySide6 desktop GUI (`gui.py`) wraps all 4 steps in one window, one tab
+per step, as an alternative to running the scripts by hand:
+
+```bash
+python gui.py
+```
+
+- **Tabs 1, 2, and 4** (Image Prep, OCR Extraction, PDF Assembly) each have
+  directory pickers and the same parameters as their CLI equivalents, a
+  Run button, and a live, color-coded log console — these run the actual
+  `01_`/`02_`/`04_` scripts as subprocesses, so behavior matches the CLI
+  exactly.
+- **Tab 3** (Correction) offers both "Run Auto Correction (Claude API)"
+  (runs `03_text_correct.py --auto`, requires `ANTHROPIC_API_KEY`) and a
+  **manual review dialog** that needs no API key at all: for every OCR
+  block below the confidence threshold, it shows the source image with
+  that block outlined in red plus a zoomed-in crop of just that region,
+  alongside an editable text box. You can Accept As-Is, Save Edited Text,
+  or Stop Reviewing (keeps decisions made so far and skips the rest).
+  Output is written in the same `*_ocr_corrected.json` format and naming
+  convention Step 4 already expects.
+
+Requires `PySide6` (included in `requirements.txt`).
+
 ### Detailed Usage
 
 #### Step 1: Image Preparation
@@ -328,6 +354,16 @@ Searchable PDF creation:
 
 - **PDFAssembler** - Create searchable PDF
 - **PDFMerger** - Merge multiple PDFs
+
+### gui.py
+
+PySide6 desktop GUI wrapping all 4 steps:
+
+- **MainWindow** - Tabbed window, one tab per step
+- **ProcessRunner** - Runs a step's CLI script via `QProcess`, streaming
+  output into a `LogConsole`
+- **ReviewDialog** - Per-block manual review dialog for Step 3 (image +
+  bounding box, editable text, accept/edit/stop)
 
 ## Advanced Usage
 
