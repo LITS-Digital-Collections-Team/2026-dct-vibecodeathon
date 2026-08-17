@@ -14,6 +14,8 @@ Usage:
 import argparse
 import json
 import logging
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import os
@@ -25,20 +27,45 @@ from utils import (
 
 logger = logging.getLogger(__name__)
 
+# Tools disallowed on every `claude -p` correction call. This is a pure
+# text-in/text-out task with no reason to touch the filesystem, and denying
+# tool use guarantees the subprocess can never block on a permission prompt
+# during an unattended batch run.
+_CLI_DISALLOWED_TOOLS = "Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch"
+
 
 class TextCorrector:
-    """Correct OCR text using Claude API."""
+    """Correct OCR text using Claude, via the Anthropic API or the
+    Claude Code CLI (OAuth-authenticated Claude subscription, no API key)."""
 
-    def __init__(self, api_key: Optional[str] = None):
-        """Initialize Claude client.
+    def __init__(self, api_key: Optional[str] = None, backend: str = "api"):
+        """Initialize the corrector.
 
         Args:
-            api_key: Anthropic API key (or from ANTHROPIC_API_KEY env var)
+            api_key: Anthropic API key (or from ANTHROPIC_API_KEY env var).
+                Ignored when backend="cli".
+            backend: "api" (default) uses the Anthropic SDK and requires an
+                API key. "cli" shells out to the `claude` CLI's non-interactive
+                print mode, reusing whatever Claude Code login (OAuth
+                subscription or API key) is already active in this
+                environment — no ANTHROPIC_API_KEY needed if you're logged
+                into a Claude subscription via `claude /login`.
         """
+        self.backend = backend
+        self.client = None
+        self.claude_bin = None
+
+        if backend == "cli":
+            self.claude_bin = shutil.which("claude")
+            if not self.claude_bin:
+                logger.warning("claude CLI not found on PATH; corrections will return original text")
+            else:
+                logger.info(f"Using claude CLI at {self.claude_bin} (backend=cli)")
+            return
+
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not self.api_key:
             logger.warning("No Anthropic API key found. Set ANTHROPIC_API_KEY environment variable.")
-            self.client = None
         else:
             try:
                 import anthropic
@@ -46,10 +73,19 @@ class TextCorrector:
                 logger.info("Claude API client initialized")
             except ImportError:
                 logger.error("anthropic not installed. Install with: pip install anthropic")
-                self.client = None
+
+    @staticmethod
+    def _build_prompt(text: str) -> str:
+        return f"""You are an OCR correction specialist. The following text was extracted from an image using OCR and may contain errors.
+Please correct any obvious OCR errors (e.g., 'l' mistaken for '1', 'O' for '0', etc.) while preserving the original meaning and structure.
+Only correct clear mistakes. If text is ambiguous, keep it as-is.
+Return ONLY the corrected text, nothing else.
+
+Original OCR text:
+{text}"""
 
     def correct_text(self, text: str) -> str:
-        """Correct text using Claude API.
+        """Correct text using Claude, via whichever backend was configured.
 
         Args:
             text: OCR text to correct
@@ -57,6 +93,9 @@ class TextCorrector:
         Returns:
             Corrected text
         """
+        if self.backend == "cli":
+            return self._correct_via_cli(text)
+
         if not self.client:
             logger.warning("Claude client not available, returning original text")
             return text
@@ -68,13 +107,7 @@ class TextCorrector:
                 messages=[
                     {
                         "role": "user",
-                        "content": f"""You are an OCR correction specialist. The following text was extracted from an image using OCR and may contain errors. 
-Please correct any obvious OCR errors (e.g., 'l' mistaken for '1', 'O' for '0', etc.) while preserving the original meaning and structure.
-Only correct clear mistakes. If text is ambiguous, keep it as-is.
-Return ONLY the corrected text, nothing else.
-
-Original OCR text:
-{text}"""
+                        "content": self._build_prompt(text)
                     }
                 ]
             )
@@ -83,6 +116,43 @@ Original OCR text:
             return corrected
         except Exception as e:
             logger.error(f"Claude API error: {e}")
+            return text
+
+    def _correct_via_cli(self, text: str) -> str:
+        """Correct text by shelling out to `claude -p` (OAuth, no API key)."""
+        if not self.claude_bin:
+            return text
+
+        cmd = [
+            self.claude_bin, "-p", self._build_prompt(text),
+            "--output-format", "json",
+            "--disallowed-tools", _CLI_DISALLOWED_TOOLS,
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode != 0:
+                logger.error(f"claude CLI exited {result.returncode}: {result.stderr.strip()[:200]}")
+                return text
+
+            payload = json.loads(result.stdout)
+            if payload.get("is_error"):
+                logger.error(f"claude CLI reported an error: {payload.get('result')}")
+                return text
+
+            corrected = (payload.get("result") or "").strip()
+            if not corrected:
+                logger.warning("claude CLI returned an empty result, keeping original text")
+                return text
+            logger.debug(f"Corrected via CLI: '{text}' → '{corrected}'")
+            return corrected
+        except subprocess.TimeoutExpired:
+            logger.error("claude CLI timed out")
+            return text
+        except json.JSONDecodeError as e:
+            logger.error(f"claude CLI returned invalid JSON: {e}")
+            return text
+        except Exception as e:
+            logger.error(f"claude CLI invocation failed: {e}")
             return text
 
     def process_ocr_output(
@@ -152,13 +222,14 @@ Original OCR text:
 class TextCorrectionPipeline:
     """Pipeline for batch text correction."""
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, backend: str = "api"):
         """Initialize pipeline.
 
         Args:
-            api_key: Anthropic API key
+            api_key: Anthropic API key (ignored when backend="cli")
+            backend: "api" (Anthropic SDK) or "cli" (Claude Code CLI, OAuth)
         """
-        self.corrector = TextCorrector(api_key)
+        self.corrector = TextCorrector(api_key, backend=backend)
 
     def process_file(
         self,
@@ -190,6 +261,7 @@ class TextCorrectionPipeline:
         # Add correction metadata
         corrected_output.metadata["correction_threshold"] = confidence_threshold
         corrected_output.metadata["auto_corrected"] = auto_correct
+        corrected_output.metadata["correction_backend"] = self.corrector.backend
 
         output_path = output_dir / f"{json_path.stem}_corrected.json"
         OCRDataHandler.save_json(corrected_output, output_path)
@@ -287,6 +359,14 @@ Set ANTHROPIC_API_KEY in your .env file or system environment.
         "--auto", "-a", action="store_true",
         help="Auto-correct mode - apply Claude corrections automatically"
     )
+    parser.add_argument(
+        "--backend", choices=["api", "cli"], default="api",
+        help="'api' (default) uses the Anthropic SDK and ANTHROPIC_API_KEY. "
+             "'cli' shells out to the `claude` CLI's print mode instead, reusing "
+             "whatever Claude Code login is already active (OAuth subscription "
+             "or API key) — no ANTHROPIC_API_KEY needed if you're logged into a "
+             "Claude subscription via `claude /login`."
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
@@ -307,7 +387,7 @@ Set ANTHROPIC_API_KEY in your .env file or system environment.
     auto_correct = args.auto or (not args.interactive)
 
     try:
-        pipeline = TextCorrectionPipeline()
+        pipeline = TextCorrectionPipeline(backend=args.backend)
         output_dir = ensure_dir(args.output_dir)
 
         if args.input:

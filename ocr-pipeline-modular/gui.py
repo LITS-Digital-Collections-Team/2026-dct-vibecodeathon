@@ -131,22 +131,26 @@ class RunnableStepTab(QWidget):
         self.runner.line_output.connect(self._on_line)
         self.runner.process_finished.connect(self._on_finished)
         self.run_button: Optional[QPushButton] = None
+        self.run_buttons: List[QPushButton] = []
         self.log = LogConsole()
 
     def _on_line(self, text: str) -> None:
         self.log.write_line(text)
 
     def _on_finished(self, _exit_code: int) -> None:
-        if self.run_button:
-            self.run_button.setEnabled(True)
+        for button in self._all_run_buttons():
+            button.setEnabled(True)
+
+    def _all_run_buttons(self) -> List[QPushButton]:
+        return ([self.run_button] if self.run_button else []) + self.run_buttons
 
     def start_run(self, script: str, args: List[str]) -> None:
         if self.runner.is_running():
             QMessageBox.information(self, "Already running", "This step is already running.")
             return
         self.log.clear()
-        if self.run_button:
-            self.run_button.setEnabled(False)
+        for button in self._all_run_buttons():
+            button.setEnabled(False)
         self.runner.run(script, args)
 
 
@@ -357,11 +361,20 @@ class CorrectionTab(RunnableStepTab):
         form.addRow("Confidence threshold:", self.threshold)
 
         button_row = QHBoxLayout()
-        self.run_button = QPushButton("Run Auto Correction (Claude API)")
-        self.run_button.clicked.connect(self._run_auto)
+        self.run_button = QPushButton("Run Auto Correction (Claude API Key)")
+        self.run_button.clicked.connect(self._run_auto_api)
+        self.cli_run_button = QPushButton("Run Auto Correction (Claude CLI / OAuth)")
+        self.cli_run_button.setToolTip(
+            "Uses the `claude` CLI's non-interactive mode instead of the Anthropic "
+            "SDK — reuses your existing `claude /login` session, no ANTHROPIC_API_KEY "
+            "needed."
+        )
+        self.cli_run_button.clicked.connect(self._run_auto_cli)
+        self.run_buttons.append(self.cli_run_button)
         self.review_button = QPushButton("Start Manual Review")
         self.review_button.clicked.connect(self._run_manual_review)
         button_row.addWidget(self.run_button)
+        button_row.addWidget(self.cli_run_button)
         button_row.addWidget(self.review_button)
         form.addRow(button_row)
 
@@ -369,14 +382,21 @@ class CorrectionTab(RunnableStepTab):
         layout.addWidget(QLabel("Log:"))
         layout.addWidget(self.log)
 
-    def _run_auto(self):
+    def _run_auto(self, backend: str):
         args = [
             "--input-dir", str(self.input_dir.path()),
             "--output-dir", str(self.output_dir.path()),
             "--threshold", str(self.threshold.value()),
             "--auto",
+            "--backend", backend,
         ]
         self.start_run("03_text_correct.py", args)
+
+    def _run_auto_api(self):
+        self._run_auto("api")
+
+    def _run_auto_cli(self):
+        self._run_auto("cli")
 
     def _resolve_image_path(self, stored_path: str, image_dir: Path) -> Optional[Path]:
         candidate = resolve_path(stored_path)

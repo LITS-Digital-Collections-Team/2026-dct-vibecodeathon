@@ -132,15 +132,18 @@ python gui.py
   Run button, and a live, color-coded log console — these run the actual
   `01_`/`02_`/`04_` scripts as subprocesses, so behavior matches the CLI
   exactly.
-- **Tab 3** (Correction) offers both "Run Auto Correction (Claude API)"
-  (runs `03_text_correct.py --auto`, requires `ANTHROPIC_API_KEY`) and a
-  **manual review dialog** that needs no API key at all: for every OCR
-  block below the confidence threshold, it shows the source image with
-  that block outlined in red plus a zoomed-in crop of just that region,
-  alongside an editable text box. You can Accept As-Is, Save Edited Text,
-  or Stop Reviewing (keeps decisions made so far and skips the rest).
-  Output is written in the same `*_ocr_corrected.json` format and naming
-  convention Step 4 already expects.
+- **Tab 3** (Correction) offers three ways to correct low-confidence text:
+  "Run Auto Correction (Claude API Key)" (`--backend api`, requires
+  `ANTHROPIC_API_KEY`), "Run Auto Correction (Claude CLI / OAuth)"
+  (`--backend cli` — reuses an existing `claude /login` session, no API
+  key needed, see the `--backend` comparison table under Step 3 below), and a
+  **manual review dialog** that needs neither: for every OCR block below
+  the confidence threshold, it shows the source image with that block
+  outlined in red plus a zoomed-in crop of just that region, alongside
+  an editable text box. You can Accept As-Is, Save Edited Text, or Stop
+  Reviewing (keeps decisions made so far and skips the rest). All three
+  paths write output in the same `*_ocr_corrected.json` format and
+  naming convention Step 4 already expects.
 
 Requires `PySide6` (included in `requirements.txt`).
 
@@ -260,6 +263,10 @@ python 03_text_correct.py --input-dir ./ocr_output --output-dir ./corrected_outp
 # Single file
 python 03_text_correct.py --input image_ocr.json --output-dir ./corrected_output --auto
 
+# Use the Claude Code CLI (OAuth) instead of an API key — see below
+python 03_text_correct.py --input-dir ./ocr_output --output-dir ./corrected_output \
+  --auto --backend cli
+
 # Help
 python 03_text_correct.py --help
 ```
@@ -268,9 +275,34 @@ python 03_text_correct.py --help
 - `--threshold` (0-1): Only correct blocks below this confidence (default: 0.8)
 - `--auto`: Automatically apply Claude corrections
 - `--interactive`: Manually review each correction
+- `--backend {api,cli}` (default: `api`): which credentials to use — see below
 
 **Required:**
-- `ANTHROPIC_API_KEY` environment variable set
+- `--backend api` (default): `ANTHROPIC_API_KEY` environment variable set
+- `--backend cli`: the `claude` CLI installed and logged in (`claude /login`)
+  — no API key needed
+
+**`--backend api` vs `--backend cli`:**
+
+| | `api` (default) | `cli` |
+|---|---|---|
+| Uses | Anthropic Python SDK | `claude -p` (Claude Code's non-interactive print mode), invoked as a subprocess |
+| Auth | `ANTHROPIC_API_KEY` (Console API key, pay-per-token) | Whatever `claude` is already logged into — an OAuth-based Claude subscription (Pro/Max/Team) works, with usage counted against that plan, not billed per token |
+| When to use | You have a Console API key set up | You (or your org) have a Claude subscription and don't want to set up separate API billing |
+
+`--backend cli` shells out to `claude -p "<prompt>" --output-format json
+--disallowed-tools Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch` per
+block. Tool use is explicitly disallowed so a correction call can never
+block waiting on a permission prompt during an unattended batch run — it's
+a pure text-in/text-out call. If `claude` isn't found on `PATH`, or the
+call fails or times out (120s), the original OCR text is kept unchanged
+and a warning is logged, matching how `--backend api` handles a missing
+key or API errors. Each output JSON's `metadata.correction_backend`
+records which backend actually ran.
+
+Note: this is a different authentication surface than Google Cloud
+Vision in Step 2 — GCV always needs its own Google Cloud credentials
+regardless of which `--backend` you pick here.
 
 #### Step 4: PDF Assembly
 
