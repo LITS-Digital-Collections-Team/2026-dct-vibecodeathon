@@ -214,7 +214,7 @@ class GoogleCloudVisionOCR:
                         for paragraph in block.paragraphs:
                             para_text = ""
                             para_chars = []
-                            para_conf = 1.0
+                            word_confidences = []
 
                             # Get bounding box for paragraph
                             if paragraph.bounding_box.vertices:
@@ -232,6 +232,7 @@ class GoogleCloudVisionOCR:
 
                                 # Get word confidence
                                 word_conf = word.confidence
+                                word_confidences.append(word_conf)
 
                                 if word.bounding_box.vertices:
                                     vertices = word.bounding_box.vertices
@@ -254,6 +255,10 @@ class GoogleCloudVisionOCR:
                                         ))
 
                             if para_text.strip():
+                                para_conf = (
+                                    sum(word_confidences) / len(word_confidences)
+                                    if word_confidences else 0.0
+                                )
                                 text_block = TextBlock(
                                     text=para_text.strip(),
                                     x=float(para_x),
