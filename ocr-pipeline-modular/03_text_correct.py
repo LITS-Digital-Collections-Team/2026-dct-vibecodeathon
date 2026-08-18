@@ -79,7 +79,12 @@ class TextCorrector:
         return f"""You are an OCR correction specialist. The following text was extracted from an image using OCR and may contain errors.
 Please correct any obvious OCR errors (e.g., 'l' mistaken for '1', 'O' for '0', etc.) while preserving the original meaning and structure.
 Only correct clear mistakes. If text is ambiguous, keep it as-is.
-Return ONLY the corrected text, nothing else.
+
+Your entire response must be either the corrected text, or the original
+text unchanged — nothing else. If the text is too short, fragmented, or
+ambiguous to confidently correct, output it completely unchanged. Never
+add commentary, explanation, caveats, or notes of any kind, even if you
+cannot improve the text.
 
 Original OCR text:
 {text}"""
