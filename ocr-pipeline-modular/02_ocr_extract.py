@@ -206,62 +206,65 @@ class GoogleCloudVisionOCR:
             blocks = []
 
             # Process full text annotation
+            # GCV's response hierarchy is Page -> Block -> Paragraph -> Word
+            # -> Symbol; Page has no `paragraphs` field of its own.
             if response.full_text_annotation:
                 for page in response.full_text_annotation.pages:
-                    for paragraph in page.paragraphs:
-                        para_text = ""
-                        para_chars = []
-                        para_conf = 1.0
+                    for block in page.blocks:
+                        for paragraph in block.paragraphs:
+                            para_text = ""
+                            para_chars = []
+                            para_conf = 1.0
 
-                        # Get bounding box for paragraph
-                        if paragraph.bounding_box.vertices:
-                            vertices = paragraph.bounding_box.vertices
-                            para_x = min(v.x for v in vertices)
-                            para_y = min(v.y for v in vertices)
-                            para_x2 = max(v.x for v in vertices)
-                            para_y2 = max(v.y for v in vertices)
-                        else:
-                            continue
+                            # Get bounding box for paragraph
+                            if paragraph.bounding_box.vertices:
+                                vertices = paragraph.bounding_box.vertices
+                                para_x = min(v.x for v in vertices)
+                                para_y = min(v.y for v in vertices)
+                                para_x2 = max(v.x for v in vertices)
+                                para_y2 = max(v.y for v in vertices)
+                            else:
+                                continue
 
-                        for word in paragraph.words:
-                            word_text = "".join([symbol.text for symbol in word.symbols])
-                            para_text += word_text + " "
+                            for word in paragraph.words:
+                                word_text = "".join([symbol.text for symbol in word.symbols])
+                                para_text += word_text + " "
 
-                            # Get word confidence
-                            word_conf = word.confidence
+                                # Get word confidence
+                                word_conf = word.confidence
 
-                            if word.bounding_box.vertices:
-                                vertices = word.bounding_box.vertices
-                                word_x = min(v.x for v in vertices)
-                                word_y = min(v.y for v in vertices)
-                                word_x2 = max(v.x for v in vertices)
-                                word_y2 = max(v.y for v in vertices)
-                                word_width = word_x2 - word_x
-                                word_height = word_y2 - word_y
+                                if word.bounding_box.vertices:
+                                    vertices = word.bounding_box.vertices
+                                    word_x = min(v.x for v in vertices)
+                                    word_y = min(v.y for v in vertices)
+                                    word_x2 = max(v.x for v in vertices)
+                                    word_y2 = max(v.y for v in vertices)
+                                    word_width = word_x2 - word_x
+                                    word_height = word_y2 - word_y
 
-                                for char in word_text:
-                                    char_width = word_width / len(word_text) if word_text else 0
-                                    para_chars.append(CharBound(
-                                        char=char,
-                                        x=float(word_x),
-                                        y=float(word_y),
-                                        width=float(char_width),
-                                        height=float(word_height),
-                                        confidence=float(word_conf)
-                                    ))
+                                    for char in word_text:
+                                        char_width = word_width / len(word_text) if word_text else 0
+                                        para_chars.append(CharBound(
+                                            char=char,
+                                            x=float(word_x),
+                                            y=float(word_y),
+                                            width=float(char_width),
+                                            height=float(word_height),
+                                            confidence=float(word_conf)
+                                        ))
 
-                        if para_text.strip():
-                            text_block = TextBlock(
-                                text=para_text.strip(),
-                                x=float(para_x),
-                                y=float(para_y),
-                                width=float(para_x2 - para_x),
-                                height=float(para_y2 - para_y),
-                                chars=para_chars,
-                                source="gcv",
-                                confidence=float(para_conf)
-                            )
-                            blocks.append(text_block)
+                            if para_text.strip():
+                                text_block = TextBlock(
+                                    text=para_text.strip(),
+                                    x=float(para_x),
+                                    y=float(para_y),
+                                    width=float(para_x2 - para_x),
+                                    height=float(para_y2 - para_y),
+                                    chars=para_chars,
+                                    source="gcv",
+                                    confidence=float(para_conf)
+                                )
+                                blocks.append(text_block)
 
             ocr_output = OCROutput(
                 image_path=str(image_path),
