@@ -3,9 +3,11 @@
 Step 2: OCR Extraction - Extract text with character-level coordinates.
 
 Extracts text from images using Tesseract (local), Google Cloud Vision (API),
-or "auto" cascade mode (default): try Tesseract first, and only call GCV when
+Claude Vision (full-page transcription via the claude CLI, OAuth), or "auto"
+cascade mode (default): try Tesseract first, and only call GCV when
 Tesseract's confidence is below threshold. Saves complete OCR output with
-character-level bounding boxes and confidence scores.
+character-level bounding boxes and confidence scores (except claude-vision,
+which has no per-word coordinates -- see ClaudeVisionOCR).
 
 Usage:
     python 02_ocr_extract.py --input image.jpg --output-dir ./ocr_output
@@ -18,6 +20,8 @@ Usage:
 import argparse
 import logging
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import json
@@ -290,6 +294,116 @@ class GoogleCloudVisionOCR:
             raise
 
 
+class ClaudeVisionOCR:
+    """Transcribe an image directly with Claude's vision, via the `claude`
+    CLI's non-interactive print mode (OAuth-authenticated Claude
+    subscription, no API key needed -- see 03_text_correct.py's
+    --backend cli for the same mechanism).
+
+    Unlike Tesseract/GCV, this reads the whole page holistically with a
+    language model instead of classifying individual glyphs, which is
+    dramatically more accurate on hard material like connected cursive
+    handwriting. The tradeoff: Claude doesn't give reliable per-word
+    pixel coordinates the way a real OCR engine does, so the full
+    transcription is returned as a single TextBlock spanning the whole
+    page rather than one block per line/word. The resulting PDF is fully
+    text-searchable, just without word-level highlight positioning.
+
+    Confidence is fixed at 1.0 deliberately (not a bug like the old GCV
+    default) -- this is the highest-fidelity transcription this pipeline
+    can produce, and Step 3's text-only correction can only see the text,
+    not the image, so running it on top of a vision-grounded transcription
+    could only introduce ungrounded "corrections", never improve it.
+    """
+
+    PROMPT_TEMPLATE = (
+        "Read the image at {image_path} and transcribe the text exactly as "
+        "written, preserving line breaks and paragraph structure. If the "
+        "text is handwritten, transcribe your best reading of it.\n\n"
+        "Return ONLY the transcription, nothing else -- no preamble, no "
+        "commentary, no notes about illegible words."
+    )
+
+    def __init__(self, claude_bin: Optional[str] = None):
+        self.claude_bin = claude_bin or shutil.which("claude")
+        if not self.claude_bin:
+            logger.warning("claude CLI not found on PATH; claude-vision extraction will fail")
+
+    def extract_text(self, image_path: Path) -> OCROutput:
+        """Extract a full-page transcription using Claude's vision.
+
+        Args:
+            image_path: Path to image file
+
+        Returns:
+            OCROutput with a single page-spanning TextBlock
+        """
+        if not validate_image_path(image_path):
+            raise ValueError(f"Invalid image path: {image_path}")
+        if not self.claude_bin:
+            raise RuntimeError("claude CLI not found on PATH")
+
+        from PIL import Image
+        img = Image.open(image_path)
+        img_width, img_height = img.size
+
+        logger.info(f"Extracting text from {image_path} (Claude Vision)")
+
+        prompt = self.PROMPT_TEMPLATE.format(image_path=image_path)
+        cmd = [
+            self.claude_bin, "-p", prompt,
+            "--output-format", "json",
+            "--disallowed-tools", "Bash,Write,Edit,Glob,Grep,WebSearch,WebFetch",
+        ]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("claude CLI timed out")
+
+        if result.returncode != 0:
+            raise RuntimeError(f"claude CLI exited {result.returncode}: {result.stderr.strip()[:200]}")
+
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"claude CLI returned invalid JSON: {e}")
+
+        if payload.get("is_error"):
+            raise RuntimeError(f"claude CLI reported an error: {payload.get('result')}")
+
+        text = (payload.get("result") or "").strip()
+
+        blocks = []
+        if text:
+            blocks.append(TextBlock(
+                text=text,
+                x=0.0,
+                y=0.0,
+                width=float(img_width),
+                height=float(img_height),
+                chars=[],
+                source="claude-vision",
+                confidence=1.0
+            ))
+
+        ocr_output = OCROutput(
+            image_path=str(image_path),
+            dimensions={"width": img_width, "height": img_height},
+            blocks=blocks,
+            engine="claude-vision",
+            metadata={
+                "total_blocks": len(blocks),
+                "avg_confidence": 1.0 if blocks else 0,
+                "note": "Full-page transcription via Claude vision; no per-word "
+                        "bounding boxes, text spans the whole page rect."
+            }
+        )
+
+        logger.info(f"Extracted {len(blocks)} text block(s) via Claude Vision")
+        return ocr_output
+
+
 class CascadeOCR:
     """Run Tesseract first; only call Google Cloud Vision if Tesseract's
     confidence is too low. Keeps the common case free and local, and only
@@ -359,8 +473,11 @@ class OCRExtractor:
         """Initialize extractor with specified engine.
 
         Args:
-            engine: OCR engine ("auto", "tesseract", or "gcv"). "auto" runs
-                Tesseract first and only escalates to GCV on low confidence.
+            engine: OCR engine ("auto", "tesseract", "gcv", or
+                "claude-vision"). "auto" runs Tesseract first and only
+                escalates to GCV on low confidence. "claude-vision" is not
+                part of the auto cascade -- it's a deliberate, heavier-cost
+                choice for pages that defeat both Tesseract and GCV.
             confidence_threshold: Used by "auto" mode; see CascadeOCR.
         """
         self.engine = engine
@@ -368,6 +485,8 @@ class OCRExtractor:
             self.ocr = TesseractOCR()
         elif engine == "gcv":
             self.ocr = GoogleCloudVisionOCR()
+        elif engine == "claude-vision":
+            self.ocr = ClaudeVisionOCR()
         elif engine == "auto":
             self.ocr = CascadeOCR(confidence_threshold=confidence_threshold)
         else:
@@ -446,6 +565,12 @@ Examples:
   # Force Google Cloud Vision for every image
   python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output --engine gcv
 
+  # Full-page transcription via Claude's vision (OAuth, no API key) -- for
+  # pages that defeat both Tesseract and GCV, e.g. cursive handwriting.
+  # No per-word bounding boxes; slower and heavier than the other engines,
+  # so not run automatically by --engine auto.
+  python 02_ocr_extract.py --input image.jpg --output-dir ./ocr_output --engine claude-vision
+
   # Auto cascade with a stricter confidence threshold
   python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output \\
     --engine auto --confidence-threshold 0.85
@@ -462,9 +587,13 @@ Examples:
     parser.add_argument("--input-dir", type=Path, help="Input directory with images")
     parser.add_argument("--output-dir", type=Path, required=True, help="Output directory for OCR JSON")
     parser.add_argument(
-        "--engine", choices=["auto", "tesseract", "gcv"], default="auto",
+        "--engine", choices=["auto", "tesseract", "gcv", "claude-vision"], default="auto",
         help="OCR engine: 'auto' tries Tesseract first and escalates to GCV only on low "
-             "confidence (default), or force 'tesseract'/'gcv'"
+             "confidence (default), or force 'tesseract'/'gcv'/'claude-vision'. "
+             "'claude-vision' transcribes the full page via Claude's vision (OAuth, no "
+             "API key) -- much better on hard material like cursive handwriting, but no "
+             "per-word bounding boxes, and not part of the 'auto' cascade since it's "
+             "slower/heavier; pick it explicitly for pages that defeat Tesseract and GCV"
     )
     parser.add_argument(
         "--confidence-threshold", type=float, default=0.75,

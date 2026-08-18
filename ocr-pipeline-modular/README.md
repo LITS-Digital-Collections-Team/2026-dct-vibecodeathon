@@ -193,6 +193,10 @@ python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output --e
 # Force Google Cloud Vision for every image
 python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output --engine gcv
 
+# Full-page transcription via Claude's vision (OAuth, no API key) -- for
+# pages that defeat both Tesseract and GCV, e.g. cursive handwriting
+python 02_ocr_extract.py --input image.jpg --output-dir ./ocr_output --engine claude-vision
+
 # Dry run (extract without saving)
 python 02_ocr_extract.py --input image.jpg --output-dir ./ocr_output --dry-run
 
@@ -219,6 +223,27 @@ Each output JSON's `metadata` includes `cascade_decision`
 `tesseract_confidence`, so you can audit which engine actually produced
 each file. A per-run summary (`Cascade summary: N/M resolved by Tesseract, ...`)
 is logged after batch processing.
+
+**`--engine claude-vision`:** reads the whole page with Claude's vision
+directly, via the same `claude` CLI OAuth mechanism as Step 3's
+`--backend cli` (see that section for auth details) — no API key needed.
+This is a fundamentally different approach from Tesseract/GCV: instead of
+classifying individual glyphs and only weakly modeling language, it reads
+the full image holistically with a language model, which is dramatically
+more accurate on genuinely hard material like connected cursive
+handwriting where character segmentation itself is ambiguous. The
+tradeoff is that Claude doesn't produce reliable per-word pixel
+coordinates, so the whole transcription comes back as a **single
+page-spanning `TextBlock`** rather than one block per line/word — Step 4
+still produces a fully text-searchable PDF, just without word-level
+search-highlight positioning. Confidence is fixed at `1.0` deliberately
+(this is the highest-fidelity transcription this pipeline can produce,
+and Step 3's text-only correction — which can't see the image — could
+only introduce ungrounded changes on top of it, never improve it), so
+`claude-vision` output is not intended to be run through Step 3.
+Because it's slower and heavier than Tesseract/GCV, it is **not** part of
+the `auto` cascade — pick it explicitly for pages that still come out
+garbled after Tesseract and GCV.
 
 **Output:**
 - `image_ocr.json` - Full OCR data with character-level coordinates
@@ -371,6 +396,7 @@ Text extraction with coordinates:
 
 - **TesseractOCR** - Local Tesseract engine
 - **GoogleCloudVisionOCR** - Google Cloud Vision API
+- **ClaudeVisionOCR** - Full-page transcription via Claude's vision (OAuth CLI, no API key)
 - **OCRExtractor** - Unified interface
 
 ### 03_text_correct.py

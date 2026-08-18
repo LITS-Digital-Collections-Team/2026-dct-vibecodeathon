@@ -213,7 +213,13 @@ class OcrExtractTab(RunnableStepTab):
         self.input_dir = DirPicker("prep_output")
         self.output_dir = DirPicker("ocr_output")
         self.engine = QComboBox()
-        self.engine.addItems(["auto", "tesseract", "gcv"])
+        self.engine.addItems(["auto", "tesseract", "gcv", "claude-vision"])
+        self.engine.setToolTip(
+            "claude-vision: full-page transcription via Claude's vision "
+            "(OAuth, no API key) -- much better on hard material like "
+            "cursive handwriting, but no per-word bounding boxes, and not "
+            "part of the 'auto' cascade since it's slower/heavier."
+        )
         self.confidence_threshold = QDoubleSpinBox()
         self.confidence_threshold.setRange(0.0, 1.0)
         self.confidence_threshold.setSingleStep(0.05)
