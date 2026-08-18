@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import logging
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 import json
@@ -177,7 +178,8 @@ class PDFAssembler:
         self,
         image_dir: Path,
         ocr_dir: Path,
-        output_dir: Path
+        output_dir: Path,
+        recursive: bool = False
     ) -> List[Path]:
         """Process all image-OCR pairs in directories.
 
@@ -185,6 +187,10 @@ class PDFAssembler:
             image_dir: Directory with images
             ocr_dir: Directory with OCR JSON files
             output_dir: Output directory
+            recursive: If True, also scan subdirectories of image_dir,
+                looking up each image's OCR file under the matching
+                subfolder of ocr_dir and mirroring that subfolder under
+                output_dir (matching Steps 1-3's --recursive layout)
 
         Returns:
             List of created PDF paths
@@ -199,12 +205,13 @@ class PDFAssembler:
             raise FileNotFoundError(f"OCR directory not found: {ocr_dir}")
 
         # Find image files
+        glob_fn = image_dir.rglob if recursive else image_dir.glob
         image_files = (
-            list(image_dir.glob("*.jpg")) +
-            list(image_dir.glob("*.jpeg")) +
-            list(image_dir.glob("*.png")) +
-            list(image_dir.glob("*.tif")) +
-            list(image_dir.glob("*.tiff"))
+            list(glob_fn("*.jpg")) +
+            list(glob_fn("*.jpeg")) +
+            list(glob_fn("*.png")) +
+            list(glob_fn("*.tif")) +
+            list(glob_fn("*.tiff"))
         )
 
         if not image_files:
@@ -215,11 +222,15 @@ class PDFAssembler:
 
         results = []
         for image_path in sorted(image_files):
+            relative_dir = image_path.parent.relative_to(image_dir)
+            folder_ocr_dir = ocr_dir / relative_dir if str(relative_dir) != "." else ocr_dir
+            folder_output_dir = ensure_dir(output_dir / relative_dir) if str(relative_dir) != "." else output_dir
+
             # Find corresponding OCR file
-            ocr_json_path = ocr_dir / f"{image_path.stem}_ocr.json"
+            ocr_json_path = folder_ocr_dir / f"{image_path.stem}_ocr.json"
             if not ocr_json_path.exists():
                 # Try corrected version
-                ocr_json_path = ocr_dir / f"{image_path.stem}_ocr_corrected.json"
+                ocr_json_path = folder_ocr_dir / f"{image_path.stem}_ocr_corrected.json"
 
             if not ocr_json_path.exists():
                 logger.warning(f"No OCR file found for {image_path}, skipping")
@@ -229,7 +240,7 @@ class PDFAssembler:
                 pdf_path = self.process_image_ocr_pair(
                     image_path,
                     ocr_json_path,
-                    output_dir
+                    folder_output_dir
                 )
                 results.append(pdf_path)
             except Exception as e:
@@ -278,6 +289,43 @@ class PDFMerger:
             logger.error(f"Failed to merge PDFs: {e}")
             raise
 
+    @staticmethod
+    def merge_per_folder(pdf_paths: List[Path], output_dir: Path, root_label: str = "merged") -> List[Path]:
+        """Merge each subfolder's PDFs into one PDF per folder.
+
+        Groups pdf_paths by their parent directory (as laid out by a
+        --recursive process_batch run, where each subfolder's PDFs live
+        under output_dir/<relative subfolder>) and merges each group into
+        a single PDF named after that subfolder, written directly under
+        output_dir so merged files don't nest alongside the per-page PDFs
+        they were built from.
+
+        Args:
+            pdf_paths: PDF paths returned by process_batch
+            output_dir: The batch's output_dir (also where merged files land)
+            root_label: Name for PDFs that were at output_dir's top level
+                (no subfolder), e.g. the original scan folder's name
+
+        Returns:
+            List of merged PDF paths, one per folder
+        """
+        output_dir = Path(output_dir).resolve()
+        groups = defaultdict(list)
+        for pdf_path in pdf_paths:
+            groups[Path(pdf_path).resolve().parent].append(pdf_path)
+
+        merged_paths = []
+        for folder, group_pdfs in groups.items():
+            if folder == output_dir:
+                name = root_label
+            else:
+                name = str(folder.relative_to(output_dir)).replace("/", "_")
+            merged_path = output_dir / f"{name}.pdf"
+            PDFMerger.merge_pdfs(group_pdfs, merged_path)
+            merged_paths.append(merged_path)
+
+        return merged_paths
+
 
 def main():
     """Main entry point."""
@@ -299,6 +347,11 @@ Examples:
   # Merge all PDFs into single document
   python 04_pdf_assemble.py --image-dir ./images --ocr-dir ./corrected_output \\
     --output-dir ./pdfs --merge-output combined.pdf
+
+  # Recurse into subfolders (mirroring Steps 1-3's --recursive layout) and
+  # merge each subfolder's pages into its own PDF
+  python 04_pdf_assemble.py --image-dir ./images --ocr-dir ./corrected_output \\
+    --output-dir ./pdfs --recursive --merge-per-folder
         """
     )
 
@@ -315,9 +368,22 @@ Examples:
         "--merge-output", type=Path,
         help="Merge all output PDFs into single file"
     )
+    parser.add_argument(
+        "--recursive", action="store_true",
+        help="With --image-dir/--ocr-dir, also scan subfolders and mirror their "
+             "structure under --output-dir (matching Steps 1-3's --recursive layout)"
+    )
+    parser.add_argument(
+        "--merge-per-folder", action="store_true",
+        help="Merge each subfolder's PDFs into one PDF per folder (requires --recursive), "
+             "written under --output-dir"
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
+
+    if args.merge_per_folder and not args.recursive:
+        parser.error("--merge-per-folder requires --recursive")
 
     # Setup logging
     log_level = logging.DEBUG if args.verbose else logging.INFO
@@ -356,13 +422,20 @@ Examples:
             pdfs = assembler.process_batch(
                 args.image_dir,
                 args.ocr_dir,
-                args.output_dir
+                args.output_dir,
+                recursive=args.recursive
             )
 
             logger.info(f"Batch processing complete: {len(pdfs)} PDF(s) created")
 
             if args.merge_output:
                 PDFMerger.merge_pdfs(pdfs, args.merge_output)
+
+            if args.merge_per_folder:
+                merged = PDFMerger.merge_per_folder(
+                    pdfs, args.output_dir, root_label=args.image_dir.name
+                )
+                logger.info(f"Merged into {len(merged)} per-folder PDF(s)")
 
     except Exception as e:
         logger.error(f"Fatal error: {e}")

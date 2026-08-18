@@ -164,6 +164,9 @@ python 01_image_prep.py --input-dir ./raw_images --output-dir ./prep_output
 python 01_image_prep.py --input-dir ./raw_images --output-dir ./prep_output \
   --max-width 1200 --quality 90
 
+# Recurse into subfolders, mirroring their structure under --output-dir
+python 01_image_prep.py --input-dir ./raw_images --output-dir ./prep_output --recursive
+
 # Help
 python 01_image_prep.py --help
 ```
@@ -172,6 +175,14 @@ python 01_image_prep.py --help
 - `image_prep.jpg` - Optimized image
 - `image_metadata.json` - Preparation metadata (dimensions, scale factor)
 - `batch_metadata.json` - Batch processing summary
+
+**`--recursive`:** also scans `--input-dir`'s subfolders and mirrors each
+file's subfolder path under `--output-dir` (e.g. `raw_images/box1/p1.tif` →
+`prep_output/box1/p1_prep.jpg`). Steps 2 and 3 have matching `--recursive`
+flags that preserve this same layout, and Step 4 can merge each subfolder
+back into one PDF with `--recursive --merge-per-folder` — useful when
+`--input-dir` holds one folder per physical folder/box, and each folder's
+pages should end up in their own PDF.
 
 #### Step 2: OCR Extraction
 
@@ -199,6 +210,9 @@ python 02_ocr_extract.py --input image.jpg --output-dir ./ocr_output --engine cl
 
 # Dry run (extract without saving)
 python 02_ocr_extract.py --input image.jpg --output-dir ./ocr_output --dry-run
+
+# Recurse into subfolders, mirroring their structure under --output-dir
+python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output --recursive
 
 # Verbose output
 python 02_ocr_extract.py --input-dir ./prep_output --output-dir ./ocr_output --verbose
@@ -292,6 +306,10 @@ python 03_text_correct.py --input image_ocr.json --output-dir ./corrected_output
 python 03_text_correct.py --input-dir ./ocr_output --output-dir ./corrected_output \
   --auto --backend cli
 
+# Recurse into subfolders, mirroring their structure under --output-dir
+python 03_text_correct.py --input-dir ./ocr_output --output-dir ./corrected_output \
+  --auto --recursive
+
 # Help
 python 03_text_correct.py --help
 ```
@@ -301,6 +319,15 @@ python 03_text_correct.py --help
 - `--auto`: Automatically apply Claude corrections
 - `--interactive`: Manually review each correction
 - `--backend {api,cli}` (default: `api`): which credentials to use — see below
+- `--recursive`: also scan `--input-dir`'s subfolders, mirroring their
+  structure under `--output-dir`
+
+**Token/cost tracking:** every correction call (either backend) is appended
+as one JSON line to `logs/claude_usage.jsonl` (input/output tokens, cache
+read/creation tokens, and cost where the backend reports it), and a
+per-run total (`Claude usage this run: N input / M output tokens, $X.XXXX`)
+is logged once batch processing finishes. `logs/` is gitignored — it's a
+local record, not something to commit.
 
 **Required:**
 - `--backend api` (default): `ANTHROPIC_API_KEY` environment variable set
@@ -349,9 +376,27 @@ python 04_pdf_assemble.py --image-dir ./images --ocr-dir ./corrected_output \
 python 04_pdf_assemble.py --image-dir ./images --ocr-dir ./corrected_output \
   --output-dir ./pdf_output --merge-output combined.pdf
 
+# Recurse into subfolders (matching Steps 1-3's --recursive layout) and
+# merge each subfolder's pages into its own PDF
+python 04_pdf_assemble.py --image-dir ./images --ocr-dir ./corrected_output \
+  --output-dir ./pdf_output --recursive --merge-per-folder
+
 # Help
 python 04_pdf_assemble.py --help
 ```
+
+**`--recursive` / `--merge-per-folder`:** `--recursive` scans `--image-dir`'s
+subfolders, looking up each image's OCR file under the matching subfolder
+of `--ocr-dir` and writing its PDF under the matching subfolder of
+`--output-dir` — the same layout Steps 1-3 produce with their own
+`--recursive`. `--merge-per-folder` (requires `--recursive`) then merges
+each subfolder's PDFs into one file per folder, named after that
+subfolder (e.g. `box1/`'s pages → `box1.pdf`, nested `box1/1913/` →
+`box1_1913.pdf`) and written directly under `--output-dir`. Images at
+`--image-dir`'s top level (no subfolder) are merged into
+`<image-dir name>.pdf`. This is different from `--merge-output`, which
+always merges every PDF from the batch into one single file regardless of
+folder.
 
 ## Configuration
 

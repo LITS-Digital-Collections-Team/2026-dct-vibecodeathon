@@ -148,6 +148,55 @@ def ensure_dir(directory: Path) -> Path:
     return directory
 
 
+CLAUDE_USAGE_LOG = Path(__file__).resolve().parent / "logs" / "claude_usage.jsonl"
+
+
+def log_claude_usage(operation: str, payload: Dict[str, Any], context: str = "") -> None:
+    """Record token/cost usage from a `claude -p --output-format json` payload.
+
+    Appends one JSON line per call to CLAUDE_USAGE_LOG (a persistent record
+    across runs) and emits a one-line summary via the logger, which shows up
+    in whichever console/GUI log is already capturing this script's output.
+
+    Args:
+        operation: Which pipeline step/engine made the call, e.g.
+            "text_correct" or "claude_vision_ocr"
+        payload: The parsed JSON payload from a `claude -p --output-format
+            json` call (has "usage" and "total_cost_usd" keys)
+        context: Short human-readable identifier for what was processed
+            (e.g. an image path or a text snippet), for the log line
+    """
+    usage = payload.get("usage", {})
+    input_tokens = usage.get("input_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0)
+    cache_read = usage.get("cache_read_input_tokens", 0)
+    cache_creation = usage.get("cache_creation_input_tokens", 0)
+    cost = payload.get("total_cost_usd", 0.0)
+
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "operation": operation,
+        "context": context,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_input_tokens": cache_read,
+        "cache_creation_input_tokens": cache_creation,
+        "total_cost_usd": cost,
+    }
+
+    try:
+        ensure_dir(CLAUDE_USAGE_LOG.parent)
+        with open(CLAUDE_USAGE_LOG, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        logger.warning(f"Could not write to Claude usage log: {e}")
+
+    logger.info(
+        f"Claude usage [{operation}] {context}: {input_tokens} in / {output_tokens} out tokens "
+        f"(cache: {cache_read} read, {cache_creation} created), ${cost:.4f}"
+    )
+
+
 def get_output_filename(input_path: Path, output_dir: Path, suffix: str, extension: str = "") -> Path:
     """Generate output filename based on input filename and suffix."""
     stem = input_path.stem

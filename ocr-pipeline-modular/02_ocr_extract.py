@@ -503,11 +503,12 @@ class OCRExtractor:
         """
         return self.ocr.extract_text(image_path)
 
-    def process_batch(self, input_dir: Path) -> List[OCROutput]:
+    def process_batch(self, input_dir: Path, recursive: bool = False) -> List[OCROutput]:
         """Process all images in directory.
 
         Args:
             input_dir: Input directory
+            recursive: If True, also scan subdirectories of input_dir
 
         Returns:
             List of OCROutput objects
@@ -516,12 +517,13 @@ class OCRExtractor:
         if not input_dir.exists():
             raise FileNotFoundError(f"Input directory not found: {input_dir}")
 
+        glob_fn = input_dir.rglob if recursive else input_dir.glob
         image_files = (
-            list(input_dir.glob("*.jpg")) +
-            list(input_dir.glob("*.jpeg")) +
-            list(input_dir.glob("*.png")) +
-            list(input_dir.glob("*.tif")) +
-            list(input_dir.glob("*.tiff"))
+            list(glob_fn("*.jpg")) +
+            list(glob_fn("*.jpeg")) +
+            list(glob_fn("*.png")) +
+            list(glob_fn("*.tif")) +
+            list(glob_fn("*.tiff"))
         )
 
         if not image_files:
@@ -601,6 +603,11 @@ Examples:
              "mode before falling back to GCV (default: 0.75)"
     )
     parser.add_argument("--dry-run", action="store_true", help="Extract without saving files")
+    parser.add_argument(
+        "--recursive", action="store_true",
+        help="With --input-dir, also scan subfolders and mirror their structure "
+             "under --output-dir"
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
@@ -631,10 +638,14 @@ Examples:
 
         elif args.input_dir:
             # Batch processing
-            results = extractor.process_batch(args.input_dir)
+            results = extractor.process_batch(args.input_dir, recursive=args.recursive)
             if not args.dry_run:
                 for result in results:
-                    output_path = output_dir / f"{Path(result.image_path).stem}_ocr.json"
+                    relative_dir = Path(result.image_path).resolve().parent.relative_to(
+                        Path(args.input_dir).resolve()
+                    )
+                    target_dir = ensure_dir(output_dir / relative_dir) if str(relative_dir) != "." else output_dir
+                    output_path = target_dir / f"{Path(result.image_path).stem}_ocr.json"
                     OCRDataHandler.save_json(result, output_path)
             logger.info(f"Batch processing complete: {len(results)} files processed")
 

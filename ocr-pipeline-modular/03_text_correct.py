@@ -22,7 +22,7 @@ import os
 
 from utils import (
     ensure_dir, OCRDataHandler, setup_logging,
-    OCROutput, TextBlock, CharBound
+    OCROutput, TextBlock, CharBound, log_claude_usage
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,9 @@ class TextCorrector:
         self.backend = backend
         self.client = None
         self.claude_bin = None
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.total_cost_usd = 0.0
 
         if backend == "cli":
             self.claude_bin = shutil.which("claude")
@@ -117,6 +120,16 @@ Original OCR text:
                 ]
             )
             corrected = message.content[0].text.strip()
+            usage_payload = {
+                "usage": {
+                    "input_tokens": getattr(message.usage, "input_tokens", 0),
+                    "output_tokens": getattr(message.usage, "output_tokens", 0),
+                },
+                "total_cost_usd": 0.0,  # Anthropic SDK doesn't report cost directly
+            }
+            log_claude_usage("text_correct_api", usage_payload, context=text[:40])
+            self.total_input_tokens += usage_payload["usage"]["input_tokens"]
+            self.total_output_tokens += usage_payload["usage"]["output_tokens"]
             logger.debug(f"Corrected: '{text}' → '{corrected}'")
             return corrected
         except Exception as e:
@@ -143,6 +156,12 @@ Original OCR text:
             if payload.get("is_error"):
                 logger.error(f"claude CLI reported an error: {payload.get('result')}")
                 return text
+
+            log_claude_usage("text_correct_cli", payload, context=text[:40])
+            usage = payload.get("usage", {})
+            self.total_input_tokens += usage.get("input_tokens", 0)
+            self.total_output_tokens += usage.get("output_tokens", 0)
+            self.total_cost_usd += payload.get("total_cost_usd", 0.0)
 
             corrected = (payload.get("result") or "").strip()
             if not corrected:
@@ -278,7 +297,8 @@ class TextCorrectionPipeline:
         input_dir: Path,
         output_dir: Path,
         confidence_threshold: float = 0.8,
-        auto_correct: bool = False
+        auto_correct: bool = False,
+        recursive: bool = False
     ) -> List[Path]:
         """Process all OCR JSON files in directory.
 
@@ -287,6 +307,8 @@ class TextCorrectionPipeline:
             output_dir: Output directory
             confidence_threshold: Confidence threshold for correction
             auto_correct: Auto-correct or interactive
+            recursive: If True, also scan subdirectories of input_dir, and
+                mirror each file's subfolder path under output_dir
 
         Returns:
             List of corrected file paths
@@ -298,7 +320,7 @@ class TextCorrectionPipeline:
             raise FileNotFoundError(f"Input directory not found: {input_dir}")
 
         # Find OCR JSON files
-        json_files = list(input_dir.glob("*_ocr.json"))
+        json_files = list(input_dir.rglob("*_ocr.json")) if recursive else list(input_dir.glob("*_ocr.json"))
         if not json_files:
             logger.warning(f"No OCR JSON files found in {input_dir}")
             return []
@@ -308,9 +330,11 @@ class TextCorrectionPipeline:
         results = []
         for json_path in sorted(json_files):
             try:
+                relative_dir = json_path.parent.resolve().relative_to(input_dir.resolve())
+                target_dir = ensure_dir(output_dir / relative_dir) if str(relative_dir) != "." else output_dir
                 output_path = self.process_file(
                     json_path,
-                    output_dir,
+                    target_dir,
                     confidence_threshold=confidence_threshold,
                     auto_correct=auto_correct
                 )
@@ -318,6 +342,13 @@ class TextCorrectionPipeline:
             except Exception as e:
                 logger.error(f"Error processing {json_path}: {e}")
                 continue
+
+        if self.corrector.total_input_tokens or self.corrector.total_output_tokens:
+            logger.info(
+                f"Claude usage this run: {self.corrector.total_input_tokens} input / "
+                f"{self.corrector.total_output_tokens} output tokens, "
+                f"${self.corrector.total_cost_usd:.4f}"
+            )
 
         return results
 
@@ -372,6 +403,11 @@ Set ANTHROPIC_API_KEY in your .env file or system environment.
              "or API key) — no ANTHROPIC_API_KEY needed if you're logged into a "
              "Claude subscription via `claude /login`."
     )
+    parser.add_argument(
+        "--recursive", action="store_true",
+        help="With --input-dir, also scan subfolders and mirror their structure "
+             "under --output-dir"
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
@@ -411,7 +447,8 @@ Set ANTHROPIC_API_KEY in your .env file or system environment.
                 args.input_dir,
                 output_dir,
                 confidence_threshold=args.threshold,
-                auto_correct=auto_correct
+                auto_correct=auto_correct,
+                recursive=args.recursive
             )
             logger.info(f"Batch processing complete: {len(results)} files processed")
 

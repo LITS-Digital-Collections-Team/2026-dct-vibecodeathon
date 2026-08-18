@@ -17,6 +17,7 @@ prep_output/
 ocr_output/
 corrected_output/
 pdf_output/
+logs/
 
 # IDE
 .vscode/

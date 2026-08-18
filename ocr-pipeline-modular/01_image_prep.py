@@ -115,12 +115,16 @@ class ImagePreparator:
 
         return metadata
 
-    def process_batch(self, input_dir: Path, output_dir: Path) -> Dict[str, Any]:
+    def process_batch(self, input_dir: Path, output_dir: Path, recursive: bool = False) -> Dict[str, Any]:
         """Process all TIFF files in directory.
 
         Args:
             input_dir: Input directory
             output_dir: Output directory
+            recursive: If True, also scan subdirectories of input_dir, and
+                mirror each file's subfolder path under output_dir (so a
+                later --merge-per-folder in Step 4 can group pages back up
+                by their original folder).
 
         Returns:
             Dictionary with batch metadata
@@ -132,7 +136,10 @@ class ImagePreparator:
             raise FileNotFoundError(f"Input directory not found: {input_dir}")
 
         # Find TIFF files
-        tiff_files = list(input_dir.glob("*.tif")) + list(input_dir.glob("*.tiff"))
+        if recursive:
+            tiff_files = list(input_dir.rglob("*.tif")) + list(input_dir.rglob("*.tiff"))
+        else:
+            tiff_files = list(input_dir.glob("*.tif")) + list(input_dir.glob("*.tiff"))
         if not tiff_files:
             logger.warning(f"No TIFF files found in {input_dir}")
             return {"files_processed": 0, "files": []}
@@ -142,6 +149,7 @@ class ImagePreparator:
         batch_metadata = {
             "input_directory": str(input_dir),
             "output_directory": str(output_dir),
+            "recursive": recursive,
             "files_processed": 0,
             "files": [],
             "total_original_size": 0,
@@ -150,7 +158,9 @@ class ImagePreparator:
 
         for tiff_path in sorted(tiff_files):
             try:
-                metadata = self.prepare_image(tiff_path, output_dir)
+                relative_dir = tiff_path.parent.relative_to(input_dir)
+                target_dir = ensure_dir(output_dir / relative_dir) if str(relative_dir) != "." else output_dir
+                metadata = self.prepare_image(tiff_path, target_dir)
                 batch_metadata["files"].append(metadata)
                 batch_metadata["files_processed"] += 1
             except Exception as e:
@@ -176,6 +186,10 @@ Examples:
   # With custom settings
   python 01_image_prep.py --input-dir ./images --output-dir ./prep_output \\
     --max-width 1200 --quality 90
+
+  # Recurse into subfolders, mirroring their structure under --output-dir
+  # (each subfolder's pages can later be merged into one PDF in Step 4)
+  python 01_image_prep.py --input-dir ./scans --output-dir ./prep_output --recursive
         """
     )
 
@@ -184,6 +198,11 @@ Examples:
     parser.add_argument("--output-dir", type=Path, required=True, help="Output directory for processed images")
     parser.add_argument("--max-width", type=int, default=1000, help="Maximum image width (default: 1000)")
     parser.add_argument("--quality", type=int, default=85, help="JPEG quality 1-95 (default: 85)")
+    parser.add_argument(
+        "--recursive", action="store_true",
+        help="With --input-dir, also scan subfolders and mirror their structure "
+             "under --output-dir"
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
@@ -210,7 +229,7 @@ Examples:
 
         elif args.input_dir:
             # Batch processing
-            batch_metadata = preparator.process_batch(args.input_dir, output_dir)
+            batch_metadata = preparator.process_batch(args.input_dir, output_dir, recursive=args.recursive)
             OCRDataHandler.save_pretty_json(
                 batch_metadata,
                 output_dir / "batch_metadata.json"
