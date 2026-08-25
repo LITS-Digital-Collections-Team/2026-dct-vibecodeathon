@@ -440,6 +440,12 @@ Set ANTHROPIC_API_KEY in your .env file or system environment.
                 auto_correct=auto_correct
             )
             logger.info("Text correction complete")
+            if pipeline.corrector.total_input_tokens or pipeline.corrector.total_output_tokens:
+                logger.info(
+                    f"Claude usage this run: {pipeline.corrector.total_input_tokens} input / "
+                    f"{pipeline.corrector.total_output_tokens} output tokens, "
+                    f"${pipeline.corrector.total_cost_usd:.4f}"
+                )
 
         elif args.input_dir:
             # Batch processing

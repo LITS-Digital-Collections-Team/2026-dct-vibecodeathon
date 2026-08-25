@@ -28,7 +28,7 @@ import json
 
 from utils import (
     ensure_dir, get_output_filename, OCRDataHandler, setup_logging,
-    OCROutput, TextBlock, CharBound, validate_image_path
+    OCROutput, TextBlock, CharBound, validate_image_path, log_claude_usage
 )
 
 logger = logging.getLogger(__name__)
@@ -328,6 +328,9 @@ class ClaudeVisionOCR:
         self.claude_bin = claude_bin or shutil.which("claude")
         if not self.claude_bin:
             logger.warning("claude CLI not found on PATH; claude-vision extraction will fail")
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.total_cost_usd = 0.0
 
     def extract_text(self, image_path: Path) -> OCROutput:
         """Extract a full-page transcription using Claude's vision.
@@ -371,6 +374,12 @@ class ClaudeVisionOCR:
 
         if payload.get("is_error"):
             raise RuntimeError(f"claude CLI reported an error: {payload.get('result')}")
+
+        log_claude_usage("claude_vision_ocr", payload, context=str(image_path))
+        usage = payload.get("usage", {})
+        self.total_input_tokens += usage.get("input_tokens", 0)
+        self.total_output_tokens += usage.get("output_tokens", 0)
+        self.total_cost_usd += payload.get("total_cost_usd", 0.0)
 
         text = (payload.get("result") or "").strip()
 
@@ -541,6 +550,13 @@ class OCRExtractor:
                 logger.error(f"Error processing {image_path}: {e}")
                 continue
 
+        if getattr(self.ocr, "total_input_tokens", 0) or getattr(self.ocr, "total_output_tokens", 0):
+            logger.info(
+                f"Claude usage this run: {self.ocr.total_input_tokens} input / "
+                f"{self.ocr.total_output_tokens} output tokens, "
+                f"${self.ocr.total_cost_usd:.4f}"
+            )
+
         if self.engine == "auto" and results:
             gcv_count = sum(1 for r in results if r.metadata.get("cascade_decision") == "gcv_fallback")
             logger.info(
@@ -635,6 +651,12 @@ Examples:
                 output_path = output_dir / f"{args.input.stem}_ocr.json"
                 OCRDataHandler.save_json(result, output_path)
             logger.info("OCR extraction complete")
+            if getattr(extractor.ocr, "total_input_tokens", 0) or getattr(extractor.ocr, "total_output_tokens", 0):
+                logger.info(
+                    f"Claude usage this run: {extractor.ocr.total_input_tokens} input / "
+                    f"{extractor.ocr.total_output_tokens} output tokens, "
+                    f"${extractor.ocr.total_cost_usd:.4f}"
+                )
 
         elif args.input_dir:
             # Batch processing
