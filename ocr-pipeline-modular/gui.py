@@ -174,11 +174,13 @@ class ImagePrepTab(RunnableStepTab):
         self.quality = QSpinBox()
         self.quality.setRange(1, 95)
         self.quality.setValue(85)
+        self.recursive = QCheckBox("Recursive (scan subfolders, mirror structure into output)")
 
         form.addRow("Input directory:", self.input_dir)
         form.addRow("Output directory:", self.output_dir)
         form.addRow("Max width (px):", self.max_width)
         form.addRow("JPEG quality:", self.quality)
+        form.addRow(self.recursive)
 
         self.run_button = QPushButton("Run Image Prep")
         self.run_button.clicked.connect(self._run)
@@ -195,6 +197,8 @@ class ImagePrepTab(RunnableStepTab):
             "--max-width", str(self.max_width.value()),
             "--quality", str(self.quality.value()),
         ]
+        if self.recursive.isChecked():
+            args.append("--recursive")
         self.start_run("01_image_prep.py", args)
 
 
@@ -224,11 +228,13 @@ class OcrExtractTab(RunnableStepTab):
         self.confidence_threshold.setRange(0.0, 1.0)
         self.confidence_threshold.setSingleStep(0.05)
         self.confidence_threshold.setValue(0.75)
+        self.recursive = QCheckBox("Recursive (scan subfolders, mirror structure into output)")
 
         form.addRow("Input directory:", self.input_dir)
         form.addRow("Output directory:", self.output_dir)
         form.addRow("Engine:", self.engine)
         form.addRow("Confidence threshold:", self.confidence_threshold)
+        form.addRow(self.recursive)
 
         self.run_button = QPushButton("Run OCR Extraction")
         self.run_button.clicked.connect(self._run)
@@ -245,6 +251,8 @@ class OcrExtractTab(RunnableStepTab):
             "--engine", self.engine.currentText(),
             "--confidence-threshold", str(self.confidence_threshold.value()),
         ]
+        if self.recursive.isChecked():
+            args.append("--recursive")
         self.start_run("02_ocr_extract.py", args)
 
 
@@ -360,11 +368,17 @@ class CorrectionTab(RunnableStepTab):
         self.threshold.setRange(0.0, 1.0)
         self.threshold.setSingleStep(0.05)
         self.threshold.setValue(0.8)
+        self.recursive = QCheckBox("Recursive (scan subfolders, mirror structure into output)")
+        self.recursive.setToolTip(
+            "Also applies to Manual Review below, which will scan subfolders "
+            "for *_ocr.json files."
+        )
 
         form.addRow("Image directory (for review):", self.image_dir)
         form.addRow("OCR JSON directory:", self.input_dir)
         form.addRow("Output directory:", self.output_dir)
         form.addRow("Confidence threshold:", self.threshold)
+        form.addRow(self.recursive)
 
         button_row = QHBoxLayout()
         self.run_button = QPushButton("Run Auto Correction (Claude API Key)")
@@ -396,6 +410,8 @@ class CorrectionTab(RunnableStepTab):
             "--auto",
             "--backend", backend,
         ]
+        if self.recursive.isChecked():
+            args.append("--recursive")
         self.start_run("03_text_correct.py", args)
 
     def _run_auto_api(self):
@@ -425,7 +441,8 @@ class CorrectionTab(RunnableStepTab):
             QMessageBox.warning(self, "Not found", f"OCR directory not found: {ocr_dir}")
             return
 
-        json_files = sorted(ocr_dir.glob("*_ocr.json"))
+        glob_fn = ocr_dir.rglob if self.recursive.isChecked() else ocr_dir.glob
+        json_files = sorted(glob_fn("*_ocr.json"))
         if not json_files:
             QMessageBox.warning(self, "No files", f"No *_ocr.json files found in {ocr_dir}")
             return
@@ -466,7 +483,10 @@ class CorrectionTab(RunnableStepTab):
             ocr_output.metadata["auto_corrected"] = False
             ocr_output.metadata["review_method"] = "manual_gui"
 
-            out_path = output_dir / f"{json_path.stem}_corrected.json"
+            relative_dir = json_path.parent.resolve().relative_to(ocr_dir.resolve())
+            target_dir = output_dir / relative_dir if str(relative_dir) != "." else output_dir
+            target_dir.mkdir(parents=True, exist_ok=True)
+            out_path = target_dir / f"{json_path.stem}_corrected.json"
             OCRDataHandler.save_json(ocr_output, out_path)
             self.log.write_line(f"Saved: {out_path}")
 
@@ -491,12 +511,16 @@ class PdfAssembleTab(RunnableStepTab):
         self.output_dir = DirPicker("pdf_output")
         self.debug = QCheckBox("Debug mode (visible bounding boxes)")
         self.merge_output = QLineEdit()
+        self.recursive = QCheckBox("Recursive (scan subfolders, mirror structure into output)")
+        self.merge_per_folder = QCheckBox("Merge each subfolder into one PDF per folder (requires Recursive)")
 
         form.addRow("Image directory:", self.image_dir)
         form.addRow("OCR/corrected JSON directory:", self.ocr_dir)
         form.addRow("Output directory:", self.output_dir)
         form.addRow(self.debug)
         form.addRow("Merge into single PDF (optional filename):", self.merge_output)
+        form.addRow(self.recursive)
+        form.addRow(self.merge_per_folder)
 
         self.run_button = QPushButton("Run PDF Assembly")
         self.run_button.clicked.connect(self._run)
@@ -507,6 +531,13 @@ class PdfAssembleTab(RunnableStepTab):
         layout.addWidget(self.log)
 
     def _run(self):
+        if self.merge_per_folder.isChecked() and not self.recursive.isChecked():
+            QMessageBox.warning(
+                self, "Recursive required",
+                "\"Merge each subfolder into one PDF per folder\" requires Recursive to be checked."
+            )
+            return
+
         args = [
             "--image-dir", str(self.image_dir.path()),
             "--ocr-dir", str(self.ocr_dir.path()),
@@ -516,6 +547,10 @@ class PdfAssembleTab(RunnableStepTab):
             args.append("--debug")
         if self.merge_output.text().strip():
             args += ["--merge-output", self.merge_output.text().strip()]
+        if self.recursive.isChecked():
+            args.append("--recursive")
+        if self.merge_per_folder.isChecked():
+            args.append("--merge-per-folder")
         self.start_run("04_pdf_assemble.py", args)
 
 
