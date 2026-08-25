@@ -19,6 +19,12 @@ corrected_output/
 pdf_output/
 logs/
 
+# Personal local launcher (hardcodes this machine's home-dir paths)
+OCR Pipeline.app/
+
+# Ad-hoc manual test output
+test_final_output
+
 # IDE
 .vscode/
 .idea/
