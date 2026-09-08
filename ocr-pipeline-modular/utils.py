@@ -8,6 +8,7 @@ and PDF assembly.
 
 import json
 import logging
+import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -149,6 +150,109 @@ def ensure_dir(directory: Path) -> Path:
 
 
 CLAUDE_USAGE_LOG = Path(__file__).resolve().parent / "logs" / "claude_usage.jsonl"
+
+
+# Every `claude -p --output-format json` call in this pipeline goes through
+# run_claude_cli() below. It exists because the obvious way to make the call
+# is subtly broken on Windows: subprocess's text=True decodes stdout with the
+# platform's preferred encoding, which is cp1252 there, so any transcription
+# or correction containing a curly quote, em-dash, or accented character blew
+# up subprocess's stdout reader thread. That failure is invisible to the
+# caller -- CPython's _readerthread appends nothing to its buffer, and
+# _communicate then collapses the empty buffer to None -- so instead of a
+# real error you got "TypeError: the JSON object must be str, bytes or
+# bytearray, not NoneType" out of json.loads. The claude CLI always emits
+# UTF-8, so we decode explicitly and never consult the platform encoding.
+CLAUDE_CLI_ATTEMPTS = 2
+_CLAUDE_CLI_ENCODING = "utf-8"
+
+
+class ClaudeCLIError(RuntimeError):
+    """A `claude -p --output-format json` call failed.
+
+    Subclasses RuntimeError so existing callers that catch RuntimeError (or
+    Exception) keep working unchanged.
+    """
+
+
+def _run_claude_cli_once(cmd: List[str], timeout: int) -> Dict[str, Any]:
+    """Run the claude CLI a single time and return its parsed JSON payload.
+
+    Raises:
+        ClaudeCLIError: on timeout, non-zero exit, non-UTF-8 output, empty
+            output, unparseable JSON, or an is_error payload. Every failure
+            mode names its actual cause so a caller's log line is useful.
+    """
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise ClaudeCLIError(f"claude CLI timed out after {timeout}s")
+
+    # stderr is diagnostic only, so never let it be the thing that fails.
+    stderr = result.stderr.decode(_CLAUDE_CLI_ENCODING, errors="replace").strip()
+
+    try:
+        stdout = result.stdout.decode(_CLAUDE_CLI_ENCODING)
+    except UnicodeDecodeError as e:
+        raise ClaudeCLIError(f"claude CLI output was not valid UTF-8: {e}")
+
+    if result.returncode != 0:
+        raise ClaudeCLIError(f"claude CLI exited {result.returncode}: {stderr[:200]}")
+
+    if not stdout.strip():
+        detail = f" (stderr: {stderr[:200]})" if stderr else ""
+        raise ClaudeCLIError(f"claude CLI exited 0 but produced no output{detail}")
+
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        raise ClaudeCLIError(f"claude CLI returned invalid JSON: {e}")
+
+    if payload.get("is_error"):
+        raise ClaudeCLIError(f"claude CLI reported an error: {payload.get('result')}")
+
+    return payload
+
+
+def run_claude_cli(
+    cmd: List[str],
+    timeout: int = 120,
+    attempts: int = CLAUDE_CLI_ATTEMPTS,
+    context: str = "",
+) -> Dict[str, Any]:
+    """Run a `claude -p --output-format json` command, retrying once on failure.
+
+    Args:
+        cmd: Fully built claude CLI argv
+        timeout: Per-attempt timeout in seconds. Note that the worst case is
+            timeout * attempts before this returns.
+        attempts: Total tries, including the first. One retry absorbs the
+            transient failures (a network blip, a dropped OAuth refresh)
+            without turning a genuine error into a long stall.
+        context: Short identifier for what is being processed (an image path,
+            a text snippet), used only in the retry log line.
+
+    Returns:
+        The decoded JSON payload
+
+    Raises:
+        ClaudeCLIError: if every attempt failed, naming the last cause
+    """
+    label = f" for {context}" if context else ""
+    last_error = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return _run_claude_cli_once(cmd, timeout)
+        except ClaudeCLIError as e:
+            last_error = e
+            if attempt < attempts:
+                logger.warning(
+                    f"claude CLI attempt {attempt}/{attempts} failed{label} "
+                    f"({e}); retrying"
+                )
+
+    raise ClaudeCLIError(f"claude CLI failed after {attempts} attempts: {last_error}")
 
 
 def log_claude_usage(operation: str, payload: Dict[str, Any], context: str = "") -> None:

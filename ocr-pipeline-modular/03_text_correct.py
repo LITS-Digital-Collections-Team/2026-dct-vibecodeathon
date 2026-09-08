@@ -12,17 +12,16 @@ Usage:
 """
 
 import argparse
-import json
 import logging
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import os
 
 from utils import (
     ensure_dir, OCRDataHandler, setup_logging,
-    OCROutput, TextBlock, CharBound, log_claude_usage
+    OCROutput, TextBlock, CharBound, log_claude_usage,
+    run_claude_cli, ClaudeCLIError
 )
 
 logger = logging.getLogger(__name__)
@@ -146,38 +145,34 @@ Original OCR text:
             "--output-format", "json",
             "--disallowed-tools", _CLI_DISALLOWED_TOOLS,
         ]
+        # run_claude_cli handles the UTF-8 decode, the retry, and turning
+        # every failure mode into a ClaudeCLIError that names its real cause.
+        # This step degrades rather than raises: a single uncorrectable block
+        # must not abort an unattended batch, so on failure we log and keep
+        # the original OCR text.
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if result.returncode != 0:
-                logger.error(f"claude CLI exited {result.returncode}: {result.stderr.strip()[:200]}")
-                return text
-
-            payload = json.loads(result.stdout)
-            if payload.get("is_error"):
-                logger.error(f"claude CLI reported an error: {payload.get('result')}")
-                return text
-
-            log_claude_usage("text_correct_cli", payload, context=text[:40])
-            usage = payload.get("usage", {})
-            self.total_input_tokens += usage.get("input_tokens", 0)
-            self.total_output_tokens += usage.get("output_tokens", 0)
-            self.total_cost_usd += payload.get("total_cost_usd", 0.0)
-
-            corrected = (payload.get("result") or "").strip()
-            if not corrected:
-                logger.warning("claude CLI returned an empty result, keeping original text")
-                return text
-            logger.debug(f"Corrected via CLI: '{text}' → '{corrected}'")
-            return corrected
-        except subprocess.TimeoutExpired:
-            logger.error("claude CLI timed out")
-            return text
-        except json.JSONDecodeError as e:
-            logger.error(f"claude CLI returned invalid JSON: {e}")
+            payload = run_claude_cli(cmd, timeout=120, context=text[:40])
+        except ClaudeCLIError as e:
+            logger.error(f"{e}; keeping original text")
             return text
         except Exception as e:
-            logger.error(f"claude CLI invocation failed: {e}")
+            logger.error(f"claude CLI invocation failed: {e}; keeping original text")
             return text
+
+        log_claude_usage("text_correct_cli", payload, context=text[:40])
+        usage = payload.get("usage", {})
+        self.total_input_tokens += usage.get("input_tokens", 0)
+        self.total_output_tokens += usage.get("output_tokens", 0)
+        self.total_cost_usd += payload.get("total_cost_usd", 0.0)
+
+        # An empty result is a valid response, not a failure -- don't retry it.
+        corrected = (payload.get("result") or "").strip()
+        if not corrected:
+            logger.warning("claude CLI returned an empty result, keeping original text")
+            return text
+
+        logger.debug(f"Corrected via CLI: '{text}' → '{corrected}'")
+        return corrected
 
     def process_ocr_output(
         self,

@@ -21,14 +21,13 @@ import argparse
 import logging
 import os
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-import json
 
 from utils import (
     ensure_dir, get_output_filename, OCRDataHandler, setup_logging,
-    OCROutput, TextBlock, CharBound, validate_image_path, log_claude_usage
+    OCROutput, TextBlock, CharBound, validate_image_path, log_claude_usage,
+    run_claude_cli
 )
 
 logger = logging.getLogger(__name__)
@@ -359,21 +358,10 @@ class ClaudeVisionOCR:
             "--disallowed-tools", "Bash,Write,Edit,Glob,Grep,WebSearch,WebFetch",
         ]
 
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("claude CLI timed out")
-
-        if result.returncode != 0:
-            raise RuntimeError(f"claude CLI exited {result.returncode}: {result.stderr.strip()[:200]}")
-
-        try:
-            payload = json.loads(result.stdout)
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"claude CLI returned invalid JSON: {e}")
-
-        if payload.get("is_error"):
-            raise RuntimeError(f"claude CLI reported an error: {payload.get('result')}")
+        # run_claude_cli decodes stdout as UTF-8 explicitly (subprocess's
+        # text=True used the platform encoding, which broke on Windows), and
+        # raises ClaudeCLIError -- a RuntimeError -- if both attempts fail.
+        payload = run_claude_cli(cmd, timeout=180, context=str(image_path))
 
         log_claude_usage("claude_vision_ocr", payload, context=str(image_path))
         usage = payload.get("usage", {})
