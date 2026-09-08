@@ -72,11 +72,14 @@ class PDFAssembler:
             doc = fitz.open()
             page = doc.new_page(width=pdf_width, height=pdf_height)
 
-            # Insert image
+            # Insert image. Pass the file directly (not a decoded Pixmap) --
+            # insert_image() re-embeds an already-JPEG-compressed source as
+            # its original JPEG stream, whereas handing it a Pixmap forces
+            # PyMuPDF to store it as an uncompressed/lossless bitmap, which
+            # bloated these page PDFs to roughly 10x the source JPEG size.
             try:
                 img_rect = fitz.Rect(0, 0, pdf_width, pdf_height)
-                pix = fitz.Pixmap(image_path)
-                page.insert_image(img_rect, pixmap=pix)
+                page.insert_image(img_rect, filename=str(image_path))
             except Exception as e:
                 logger.warning(f"Could not insert image {image_path}: {e}")
 
@@ -136,9 +139,9 @@ class PDFAssembler:
                     logger.warning(f"Failed to add text to PDF: {e}")
                     continue
 
-            # Save PDF
+            # Save PDF (garbage-collect unused objects, deflate streams)
             ensure_dir(output_path.parent)
-            doc.save(output_path)
+            doc.save(output_path, garbage=4, deflate=True)
             doc.close()
 
             logger.info(f"PDF created: {output_path}")

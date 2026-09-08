@@ -324,6 +324,10 @@ class ClaudeVisionOCR:
         "commentary, no notes about illegible words."
     )
 
+    # claude CLI calls occasionally fail transiently (dropped/flaky network
+    # mid-request, etc.), so each page gets one retry before giving up.
+    RETRY_ATTEMPTS = 2
+
     def __init__(self, claude_bin: Optional[str] = None):
         self.claude_bin = claude_bin or shutil.which("claude")
         if not self.claude_bin:
@@ -331,6 +335,53 @@ class ClaudeVisionOCR:
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.total_cost_usd = 0.0
+
+    def _invoke_claude(self, prompt: str) -> dict:
+        """Run the claude CLI once and parse its JSON response.
+
+        Raises RuntimeError with a descriptive message on any failure:
+        timeout, non-zero exit, empty/missing output, or invalid JSON.
+        """
+        cmd = [
+            self.claude_bin, "-p", prompt,
+            "--output-format", "json",
+            "--disallowed-tools", "Bash,Write,Edit,Glob,Grep,WebSearch,WebFetch",
+        ]
+
+        try:
+            # Pin the decode to UTF-8: on Windows, plain text=True decodes
+            # with the system codepage (e.g. cp1252), which raises inside
+            # subprocess's internal reader thread on any non-Latin-1
+            # character in the transcription (curly quotes, em-dashes,
+            # accented letters) -- and that failure surfaces as stdout
+            # silently coming back None rather than as a raised exception.
+            result = subprocess.run(
+                cmd, capture_output=True, encoding="utf-8", timeout=180
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("claude CLI timed out")
+
+        if result.returncode != 0:
+            raise RuntimeError(f"claude CLI exited {result.returncode}: {result.stderr.strip()[:200]}")
+
+        if not result.stdout or not result.stdout.strip():
+            # A transient failure (e.g. the network dropping mid-request)
+            # can make the CLI exit 0 with nothing on stdout; surface that
+            # clearly instead of letting json.loads(None) raise a confusing
+            # TypeError.
+            raise RuntimeError(
+                f"claude CLI produced no output (stderr: {result.stderr.strip()[:200] or '<empty>'})"
+            )
+
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"claude CLI returned invalid JSON: {e}")
+
+        if payload.get("is_error"):
+            raise RuntimeError(f"claude CLI reported an error: {payload.get('result')}")
+
+        return payload
 
     def extract_text(self, image_path: Path) -> OCROutput:
         """Extract a full-page transcription using Claude's vision.
@@ -353,27 +404,19 @@ class ClaudeVisionOCR:
         logger.info(f"Extracting text from {image_path} (Claude Vision)")
 
         prompt = self.PROMPT_TEMPLATE.format(image_path=image_path)
-        cmd = [
-            self.claude_bin, "-p", prompt,
-            "--output-format", "json",
-            "--disallowed-tools", "Bash,Write,Edit,Glob,Grep,WebSearch,WebFetch",
-        ]
 
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("claude CLI timed out")
-
-        if result.returncode != 0:
-            raise RuntimeError(f"claude CLI exited {result.returncode}: {result.stderr.strip()[:200]}")
-
-        try:
-            payload = json.loads(result.stdout)
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"claude CLI returned invalid JSON: {e}")
-
-        if payload.get("is_error"):
-            raise RuntimeError(f"claude CLI reported an error: {payload.get('result')}")
+        payload = None
+        last_error = None
+        for attempt in range(1, self.RETRY_ATTEMPTS + 1):
+            try:
+                payload = self._invoke_claude(prompt)
+                break
+            except RuntimeError as e:
+                last_error = e
+                if attempt < self.RETRY_ATTEMPTS:
+                    logger.warning(f"claude-vision attempt {attempt} failed for {image_path}, retrying: {e}")
+        if payload is None:
+            raise last_error
 
         log_claude_usage("claude_vision_ocr", payload, context=str(image_path))
         usage = payload.get("usage", {})
