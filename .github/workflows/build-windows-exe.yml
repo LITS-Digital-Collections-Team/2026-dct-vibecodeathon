@@ -1,0 +1,84 @@
+# Builds the OCR pipeline GUI into a Windows .exe.
+#
+# This exists because PyInstaller cannot cross-compile: a Windows binary has to
+# be produced on Windows, and the pipeline is developed on macOS. Run it from
+# the Actions tab (workflow_dispatch) or by pushing an ocr-pipeline-v* tag, then
+# download the OCRPipeline-windows artifact.
+name: Build Windows exe
+
+on:
+  workflow_dispatch:
+  # Tags only, with no paths filter: GitHub ANDs tags and paths, so a release
+  # tag on a commit that happened not to touch the pipeline would be skipped.
+  push:
+    tags:
+      - "ocr-pipeline-v*"
+  pull_request:
+    paths:
+      - "ocr-pipeline-modular/**"
+      - ".github/workflows/build-windows-exe.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: ocr-pipeline-modular
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ocr-pipeline-modular/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build
+        run: pyinstaller --noconfirm OCRPipeline.spec
+
+      # The build succeeding proves very little on its own: the step scripts
+      # ship as bundled data, so PyInstaller cannot see their imports and a
+      # missing hiddenimport only shows up when a step actually runs. Run one
+      # for real against a generated fixture and check its output.
+      - name: Smoke test - runner mode dispatches into a bundled step
+        shell: pwsh
+        run: |
+          $exe = "dist\OCRPipeline\OCRPipeline.exe"
+          New-Item -ItemType Directory -Force -Path smoke\in | Out-Null
+          python -c "from PIL import Image; Image.new('RGB', (900, 1200), 'white').save('smoke/in/page_001.tif')"
+
+          # console=False makes this a GUI-subsystem binary, so it does not
+          # write to the CI console. Assert on exit codes and files, not stdout.
+          & $exe --run-step 01_image_prep.py --input-dir smoke\in --output-dir smoke\prep
+          if ($LASTEXITCODE -ne 0) { throw "step 1 exited $LASTEXITCODE" }
+          if (-not (Test-Path smoke\prep\page_001_prep.jpg)) { throw "step 1 produced no output" }
+          Write-Host "step 1 ran inside the frozen build and produced output"
+
+      - name: Smoke test - a bad step name is rejected
+        shell: pwsh
+        run: |
+          $exe = "dist\OCRPipeline\OCRPipeline.exe"
+          & $exe --run-step not_a_step.py
+          if ($LASTEXITCODE -ne 2) { throw "expected exit 2 for a bad step, got $LASTEXITCODE" }
+          Write-Host "bad step name correctly rejected with exit 2"
+
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path dist\OCRPipeline\* -DestinationPath OCRPipeline-windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OCRPipeline-windows
+          path: ocr-pipeline-modular/OCRPipeline-windows.zip
+          retention-days: 30
+          if-no-files-found: error

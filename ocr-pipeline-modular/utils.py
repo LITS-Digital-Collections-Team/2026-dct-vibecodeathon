@@ -9,6 +9,7 @@ and PDF assembly.
 import json
 import logging
 import subprocess
+import sys
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -149,7 +150,26 @@ def ensure_dir(directory: Path) -> Path:
     return directory
 
 
-CLAUDE_USAGE_LOG = Path(__file__).resolve().parent / "logs" / "claude_usage.jsonl"
+# --- Where things live, in a source checkout and inside a frozen build -----
+# PyInstaller unpacks the bundled payload into a temp directory it deletes on
+# exit and points sys._MEIPASS at it, so the two directories a script cares
+# about stop being the same one and have to be kept apart:
+#
+#   BUNDLE_DIR: read-only payload shipped inside the build (the step scripts).
+#   APP_DIR:    the folder the app was launched from -- writable, visible to
+#               the user, and where anything worth keeping has to go.
+#
+# In a plain source checkout both are just the pipeline directory.
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+APP_DIR = (
+    Path(sys.executable).resolve().parent if IS_FROZEN
+    else Path(__file__).resolve().parent
+)
+
+# APP_DIR, not __file__: inside a frozen build __file__ resolves into the temp
+# BUNDLE_DIR, so a usage log written there would be deleted on every exit.
+CLAUDE_USAGE_LOG = APP_DIR / "logs" / "claude_usage.jsonl"
 
 
 # Every `claude -p --output-format json` call in this pipeline goes through

@@ -7,6 +7,9 @@ stream their log output live. Step 3 also offers a manual review dialog
 that reads/writes the same OCR JSON format without needing an API key.
 """
 
+import importlib.util
+import io
+import os
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -17,13 +20,29 @@ from PySide6.QtWidgets import (
     QTabWidget, QFormLayout, QDialog, QDialogButtonBox, QCheckBox,
     QScrollArea, QDoubleSpinBox, QSpinBox, QComboBox, QMessageBox,
 )
-from PySide6.QtCore import Qt, QProcess, Signal, QObject
+from PySide6.QtCore import Qt, QProcess, QProcessEnvironment, Signal, QObject
 from PySide6.QtGui import QFont, QColor, QTextCursor, QPixmap, QPainter, QPen
 
-from utils import OCRDataHandler, TextBlock
+from utils import OCRDataHandler, TextBlock, APP_DIR, BUNDLE_DIR, IS_FROZEN
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+# User-entered relative paths resolve against the folder the app runs from,
+# which is the pipeline directory in a checkout and the .exe's folder when
+# frozen -- never the temp bundle, which vanishes on exit.
+SCRIPT_DIR = APP_DIR
 PYTHON_EXE = sys.executable
+
+# The four steps this GUI can run. Also the allowlist for runner mode below,
+# so a stray --run-step argument can't be pointed at anything else.
+STEP_SCRIPTS = (
+    "01_image_prep.py",
+    "02_ocr_extract.py",
+    "03_text_correct.py",
+    "04_pdf_assemble.py",
+)
+
+# Internal flag that puts this program in runner mode instead of showing the
+# GUI. Only a frozen build uses it -- see ProcessRunner.run and run_step.
+RUN_STEP_FLAG = "--run-step"
 
 
 def resolve_path(value: str) -> Path:
@@ -102,14 +121,30 @@ class ProcessRunner(QObject):
     def run(self, script: str, args: List[str]) -> None:
         if self.is_running():
             return
+
+        # A frozen build has no interpreter to shell out to -- sys.executable
+        # IS the app, so running it against a .py path would just relaunch the
+        # GUI. Re-invoke ourselves in runner mode instead (see run_step). The
+        # step still gets its own process, so the live log, the exit code, and
+        # a crash not taking the window down all behave as before.
+        step_args = [RUN_STEP_FLAG, script] if IS_FROZEN else [str(BUNDLE_DIR / script)]
+
         self.process = QProcess()
         self.process.setProgram(PYTHON_EXE)
-        self.process.setArguments([str(SCRIPT_DIR / script)] + args)
-        self.process.setWorkingDirectory(str(SCRIPT_DIR))
+        self.process.setArguments(step_args + args)
+        self.process.setWorkingDirectory(str(APP_DIR))
         self.process.setProcessChannelMode(QProcess.MergedChannels)
+
+        # _on_output decodes the child's stream as UTF-8, so make the child
+        # actually emit UTF-8: on Windows it would otherwise use cp1252 and any
+        # accent or curly quote in a log line would arrive as mojibake.
+        env = QProcessEnvironment.systemEnvironment()
+        env.insert("PYTHONIOENCODING", "utf-8")
+        self.process.setProcessEnvironment(env)
+
         self.process.readyReadStandardOutput.connect(self._on_output)
         self.process.finished.connect(self._on_finished)
-        self.line_output.emit(f"$ {PYTHON_EXE} {script} {' '.join(args)}")
+        self.line_output.emit(f"$ {Path(PYTHON_EXE).name} {script} {' '.join(args)}")
         self.process.start()
 
     def _on_output(self):
@@ -572,7 +607,81 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(tabs)
 
 
+def _ensure_std_streams() -> None:
+    """Give this process usable UTF-8 stdout/stderr.
+
+    A --windowed frozen build starts with no console attached, so Python can
+    leave sys.stdout/sys.stderr as None. QProcess hands the child real pipes,
+    so the file descriptors are fine -- rebind the streams to them rather than
+    let the first log call raise. Encoding is pinned to UTF-8 to match what the
+    GUI decodes with.
+    """
+    for name, fd in (("stdout", 1), ("stderr", 2)):
+        if getattr(sys, name, None) is not None:
+            continue
+        try:
+            stream = io.TextIOWrapper(
+                io.FileIO(fd, "w"), encoding="utf-8", errors="replace",
+                line_buffering=True,
+            )
+        except OSError:
+            stream = open(os.devnull, "w", encoding="utf-8")
+        setattr(sys, name, stream)
+
+
+def run_step(argv: List[str]) -> int:
+    """Runner mode: run one pipeline step in this process, return its exit code.
+
+    A frozen build ships the step scripts as bundled data rather than as
+    importable modules -- their filenames start with digits, so `import
+    02_ocr_extract` is not even valid syntax. Load the requested one from the
+    bundle by path and call its main(), with sys.argv rewritten so its own
+    argparse sees exactly the flags it expects.
+
+    Args:
+        argv: The step script name followed by that step's CLI arguments
+
+    Returns:
+        The step's exit code (2 for a bad runner-mode invocation)
+    """
+    if not argv:
+        print(f"{RUN_STEP_FLAG} needs a step script name", file=sys.stderr)
+        return 2
+
+    script, step_args = argv[0], argv[1:]
+    if script not in STEP_SCRIPTS:
+        print(f"Not a pipeline step: {script}", file=sys.stderr)
+        return 2
+
+    script_path = BUNDLE_DIR / script
+    if not script_path.is_file():
+        print(f"Step script missing from the bundle: {script_path}", file=sys.stderr)
+        return 2
+
+    _ensure_std_streams()
+
+    module_name = f"pipeline_step_{script[:2]}"
+    spec = importlib.util.spec_from_file_location(module_name, script_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+
+    sys.argv = [script, *step_args]
+    try:
+        # __name__ is module_name, not "__main__", so the script's own
+        # if-main block stays dormant and main() is called explicitly.
+        spec.loader.exec_module(module)
+        module.main()
+    except SystemExit as e:
+        return int(e.code) if isinstance(e.code, int) else (0 if e.code is None else 1)
+    return 0
+
+
 def main():
+    # Runner mode has to be handled before any Qt object exists: this process
+    # is standing in for a CLI invocation and must not open a window.
+    if len(sys.argv) > 1 and sys.argv[1] == RUN_STEP_FLAG:
+        sys.exit(run_step(sys.argv[2:]))
+
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()

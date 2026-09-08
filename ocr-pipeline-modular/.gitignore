@@ -31,3 +31,8 @@ test_final_output
 
 # macOS
 .DS_Store
+
+# PyInstaller build output
+build/
+dist/
+*.zip

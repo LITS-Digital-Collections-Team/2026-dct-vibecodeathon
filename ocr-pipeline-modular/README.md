@@ -49,6 +49,8 @@ OCR JSON → Claude Review            Image + OCR → Searchable PDF
 
 ## Installation
 
+Windows users who would rather not install Python can run a packaged build instead — see [BUILD.md](BUILD.md).
+
 ### Prerequisites
 
 - Python 3.8+
