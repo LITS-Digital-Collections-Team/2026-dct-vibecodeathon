@@ -545,7 +545,14 @@ curl https://api.anthropic.com/v1/messages \
 
 ## Performance Tips
 
-1. **Parallel Processing** - Process multiple images in parallel using external tools
+1. **Parallel Processing** - Steps 1-3 each take `--workers N` (default 4) to process
+   multiple files concurrently. Step 1 uses separate processes (CPU-bound resize/encode);
+   Steps 2-3 use threads to overlap the wait on separate Tesseract/GCV/Claude calls. This
+   never batches multiple pages into one Claude call -- each page/block is still its own
+   call, just run concurrently, since asking Claude to transcribe several pages at once
+   risks it conflating text across pages. Set `--workers 1` to disable. Step 3's
+   `--interactive` mode always runs single-threaded (concurrent manual review prompts
+   would collide).
 2. **Batch Operations** - Use batch mode for efficiency over single-file mode
 3. **Confidence Thresholds** - Adjust threshold in Step 3 to skip unnecessary corrections
 4. **Image Resolution** - Balance between quality and processing time in Step 1

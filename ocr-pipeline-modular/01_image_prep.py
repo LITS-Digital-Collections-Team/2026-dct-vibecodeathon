@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Any, Optional
 from PIL import Image
@@ -115,7 +116,9 @@ class ImagePreparator:
 
         return metadata
 
-    def process_batch(self, input_dir: Path, output_dir: Path, recursive: bool = False) -> Dict[str, Any]:
+    def process_batch(
+        self, input_dir: Path, output_dir: Path, recursive: bool = False, workers: int = 1
+    ) -> Dict[str, Any]:
         """Process all TIFF files in directory.
 
         Args:
@@ -125,6 +128,10 @@ class ImagePreparator:
                 mirror each file's subfolder path under output_dir (so a
                 later --merge-per-folder in Step 4 can group pages back up
                 by their original folder).
+            workers: Number of images to resize/encode concurrently, using
+                separate processes (this step is CPU-bound, unlike Steps
+                2-3's network calls, so a process pool actually parallelizes
+                it instead of just overlapping I/O wait).
 
         Returns:
             Dictionary with batch metadata
@@ -144,7 +151,8 @@ class ImagePreparator:
             logger.warning(f"No TIFF files found in {input_dir}")
             return {"files_processed": 0, "files": []}
 
-        logger.info(f"Found {len(tiff_files)} TIFF file(s)")
+        sorted_files = sorted(tiff_files)
+        logger.info(f"Found {len(sorted_files)} TIFF file(s), {workers} worker(s)")
 
         batch_metadata = {
             "input_directory": str(input_dir),
@@ -156,16 +164,37 @@ class ImagePreparator:
             "total_output_size": 0
         }
 
-        for tiff_path in sorted(tiff_files):
-            try:
-                relative_dir = tiff_path.parent.relative_to(input_dir)
-                target_dir = ensure_dir(output_dir / relative_dir) if str(relative_dir) != "." else output_dir
-                metadata = self.prepare_image(tiff_path, target_dir)
-                batch_metadata["files"].append(metadata)
+        def _target_dir(tiff_path: Path) -> Path:
+            relative_dir = tiff_path.parent.relative_to(input_dir)
+            return ensure_dir(output_dir / relative_dir) if str(relative_dir) != "." else output_dir
+
+        results_by_path: Dict[Path, Dict[str, Any]] = {}
+        if workers > 1:
+            # Target directories are created up front since ensure_dir()'s
+            # mkdir isn't safe to run concurrently from worker processes.
+            target_dirs = {p: _target_dir(p) for p in sorted_files}
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                future_to_path = {
+                    executor.submit(self.prepare_image, p, target_dirs[p]): p for p in sorted_files
+                }
+                for future in as_completed(future_to_path):
+                    tiff_path = future_to_path[future]
+                    try:
+                        results_by_path[tiff_path] = future.result()
+                    except Exception as e:
+                        logger.error(f"Error processing {tiff_path}: {e}")
+        else:
+            for tiff_path in sorted_files:
+                try:
+                    results_by_path[tiff_path] = self.prepare_image(tiff_path, _target_dir(tiff_path))
+                except Exception as e:
+                    logger.error(f"Error processing {tiff_path}: {e}")
+                    continue
+
+        for tiff_path in sorted_files:
+            if tiff_path in results_by_path:
+                batch_metadata["files"].append(results_by_path[tiff_path])
                 batch_metadata["files_processed"] += 1
-            except Exception as e:
-                logger.error(f"Error processing {tiff_path}: {e}")
-                continue
 
         return batch_metadata
 
@@ -203,6 +232,11 @@ Examples:
         help="With --input-dir, also scan subfolders and mirror their structure "
              "under --output-dir"
     )
+    parser.add_argument(
+        "--workers", type=int, default=4,
+        help="With --input-dir, number of images to resize/encode concurrently, "
+             "using separate processes (default: 4). Set to 1 to disable."
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
@@ -229,7 +263,9 @@ Examples:
 
         elif args.input_dir:
             # Batch processing
-            batch_metadata = preparator.process_batch(args.input_dir, output_dir, recursive=args.recursive)
+            batch_metadata = preparator.process_batch(
+                args.input_dir, output_dir, recursive=args.recursive, workers=args.workers
+            )
             OCRDataHandler.save_pretty_json(
                 batch_metadata,
                 output_dir / "batch_metadata.json"

@@ -22,6 +22,8 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import json
@@ -335,6 +337,7 @@ class ClaudeVisionOCR:
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.total_cost_usd = 0.0
+        self._usage_lock = threading.Lock()
 
     def _invoke_claude(self, prompt: str) -> dict:
         """Run the claude CLI once and parse its JSON response.
@@ -420,9 +423,10 @@ class ClaudeVisionOCR:
 
         log_claude_usage("claude_vision_ocr", payload, context=str(image_path))
         usage = payload.get("usage", {})
-        self.total_input_tokens += usage.get("input_tokens", 0)
-        self.total_output_tokens += usage.get("output_tokens", 0)
-        self.total_cost_usd += payload.get("total_cost_usd", 0.0)
+        with self._usage_lock:
+            self.total_input_tokens += usage.get("input_tokens", 0)
+            self.total_output_tokens += usage.get("output_tokens", 0)
+            self.total_cost_usd += payload.get("total_cost_usd", 0.0)
 
         text = (payload.get("result") or "").strip()
 
@@ -555,12 +559,16 @@ class OCRExtractor:
         """
         return self.ocr.extract_text(image_path)
 
-    def process_batch(self, input_dir: Path, recursive: bool = False) -> List[OCROutput]:
+    def process_batch(self, input_dir: Path, recursive: bool = False, workers: int = 1) -> List[OCROutput]:
         """Process all images in directory.
 
         Args:
             input_dir: Input directory
             recursive: If True, also scan subdirectories of input_dir
+            workers: Number of images to process concurrently. Each image is
+                still one independent OCR/Claude call -- this parallelizes
+                the wait on separate calls, it never batches multiple pages
+                into a single call (which risks the model conflating pages).
 
         Returns:
             List of OCROutput objects
@@ -582,16 +590,29 @@ class OCRExtractor:
             logger.warning(f"No image files found in {input_dir}")
             return []
 
-        logger.info(f"Processing {len(image_files)} image(s)")
+        sorted_files = sorted(image_files)
+        logger.info(f"Processing {len(sorted_files)} image(s) with {workers} worker(s)")
 
-        results = []
-        for image_path in sorted(image_files):
-            try:
-                result = self.process_image(image_path)
-                results.append(result)
-            except Exception as e:
-                logger.error(f"Error processing {image_path}: {e}")
-                continue
+        results_by_path: Dict[Path, OCROutput] = {}
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                future_to_path = {executor.submit(self.process_image, p): p for p in sorted_files}
+                for future in as_completed(future_to_path):
+                    image_path = future_to_path[future]
+                    try:
+                        results_by_path[image_path] = future.result()
+                    except Exception as e:
+                        logger.error(f"Error processing {image_path}: {e}")
+        else:
+            for image_path in sorted_files:
+                try:
+                    results_by_path[image_path] = self.process_image(image_path)
+                except Exception as e:
+                    logger.error(f"Error processing {image_path}: {e}")
+                    continue
+
+        # Preserve deterministic filename order regardless of completion order.
+        results = [results_by_path[p] for p in sorted_files if p in results_by_path]
 
         if getattr(self.ocr, "total_input_tokens", 0) or getattr(self.ocr, "total_output_tokens", 0):
             logger.info(
@@ -667,6 +688,12 @@ Examples:
         help="With --input-dir, also scan subfolders and mirror their structure "
              "under --output-dir"
     )
+    parser.add_argument(
+        "--workers", type=int, default=4,
+        help="With --input-dir, number of images to process concurrently (default: 4). "
+             "Each image is still a separate OCR/Claude call -- this only parallelizes "
+             "the waiting, it never combines pages into one call. Set to 1 to disable."
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
@@ -703,7 +730,7 @@ Examples:
 
         elif args.input_dir:
             # Batch processing
-            results = extractor.process_batch(args.input_dir, recursive=args.recursive)
+            results = extractor.process_batch(args.input_dir, recursive=args.recursive, workers=args.workers)
             if not args.dry_run:
                 for result in results:
                     relative_dir = Path(result.image_path).resolve().parent.relative_to(

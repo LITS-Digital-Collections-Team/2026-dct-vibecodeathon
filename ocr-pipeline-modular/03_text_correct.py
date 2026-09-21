@@ -16,6 +16,8 @@ import json
 import logging
 import shutil
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import os
@@ -57,6 +59,7 @@ class TextCorrector:
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.total_cost_usd = 0.0
+        self._usage_lock = threading.Lock()
 
         if backend == "cli":
             self.claude_bin = shutil.which("claude")
@@ -128,8 +131,9 @@ Original OCR text:
                 "total_cost_usd": 0.0,  # Anthropic SDK doesn't report cost directly
             }
             log_claude_usage("text_correct_api", usage_payload, context=text[:40])
-            self.total_input_tokens += usage_payload["usage"]["input_tokens"]
-            self.total_output_tokens += usage_payload["usage"]["output_tokens"]
+            with self._usage_lock:
+                self.total_input_tokens += usage_payload["usage"]["input_tokens"]
+                self.total_output_tokens += usage_payload["usage"]["output_tokens"]
             logger.debug(f"Corrected: '{text}' → '{corrected}'")
             return corrected
         except Exception as e:
@@ -159,9 +163,10 @@ Original OCR text:
 
             log_claude_usage("text_correct_cli", payload, context=text[:40])
             usage = payload.get("usage", {})
-            self.total_input_tokens += usage.get("input_tokens", 0)
-            self.total_output_tokens += usage.get("output_tokens", 0)
-            self.total_cost_usd += payload.get("total_cost_usd", 0.0)
+            with self._usage_lock:
+                self.total_input_tokens += usage.get("input_tokens", 0)
+                self.total_output_tokens += usage.get("output_tokens", 0)
+                self.total_cost_usd += payload.get("total_cost_usd", 0.0)
 
             corrected = (payload.get("result") or "").strip()
             if not corrected:
@@ -298,7 +303,8 @@ class TextCorrectionPipeline:
         output_dir: Path,
         confidence_threshold: float = 0.8,
         auto_correct: bool = False,
-        recursive: bool = False
+        recursive: bool = False,
+        workers: int = 1
     ) -> List[Path]:
         """Process all OCR JSON files in directory.
 
@@ -309,6 +315,12 @@ class TextCorrectionPipeline:
             auto_correct: Auto-correct or interactive
             recursive: If True, also scan subdirectories of input_dir, and
                 mirror each file's subfolder path under output_dir
+            workers: Number of files to correct concurrently. Each file's
+                low-confidence blocks are still corrected one at a time via
+                independent Claude calls -- this only overlaps the wait
+                across files/blocks, it never combines them into one call.
+                Ignored (forced to 1) when auto_correct is False, since
+                interactive review must run one file at a time.
 
         Returns:
             List of corrected file paths
@@ -325,23 +337,40 @@ class TextCorrectionPipeline:
             logger.warning(f"No OCR JSON files found in {input_dir}")
             return []
 
-        logger.info(f"Found {len(json_files)} OCR JSON file(s)")
+        sorted_files = sorted(json_files)
+        effective_workers = workers if auto_correct else 1
+        logger.info(f"Found {len(sorted_files)} OCR JSON file(s), {effective_workers} worker(s)")
 
-        results = []
-        for json_path in sorted(json_files):
-            try:
-                relative_dir = json_path.parent.resolve().relative_to(input_dir.resolve())
-                target_dir = ensure_dir(output_dir / relative_dir) if str(relative_dir) != "." else output_dir
-                output_path = self.process_file(
-                    json_path,
-                    target_dir,
-                    confidence_threshold=confidence_threshold,
-                    auto_correct=auto_correct
-                )
-                results.append(output_path)
-            except Exception as e:
-                logger.error(f"Error processing {json_path}: {e}")
-                continue
+        def _process_one(json_path: Path) -> Path:
+            relative_dir = json_path.parent.resolve().relative_to(input_dir.resolve())
+            target_dir = ensure_dir(output_dir / relative_dir) if str(relative_dir) != "." else output_dir
+            return self.process_file(
+                json_path,
+                target_dir,
+                confidence_threshold=confidence_threshold,
+                auto_correct=auto_correct
+            )
+
+        results_by_path: Dict[Path, Path] = {}
+        if effective_workers > 1:
+            with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+                future_to_path = {executor.submit(_process_one, p): p for p in sorted_files}
+                for future in as_completed(future_to_path):
+                    json_path = future_to_path[future]
+                    try:
+                        results_by_path[json_path] = future.result()
+                    except Exception as e:
+                        logger.error(f"Error processing {json_path}: {e}")
+        else:
+            for json_path in sorted_files:
+                try:
+                    results_by_path[json_path] = _process_one(json_path)
+                except Exception as e:
+                    logger.error(f"Error processing {json_path}: {e}")
+                    continue
+
+        # Preserve deterministic filename order regardless of completion order.
+        results = [results_by_path[p] for p in sorted_files if p in results_by_path]
 
         if self.corrector.total_input_tokens or self.corrector.total_output_tokens:
             logger.info(
@@ -408,6 +437,13 @@ Set ANTHROPIC_API_KEY in your .env file or system environment.
         help="With --input-dir, also scan subfolders and mirror their structure "
              "under --output-dir"
     )
+    parser.add_argument(
+        "--workers", type=int, default=4,
+        help="With --input-dir and --auto, number of files to correct concurrently "
+             "(default: 4). Each low-confidence block is still one independent Claude "
+             "call -- this only parallelizes the waiting, it never combines blocks into "
+             "one call. Ignored (forced to 1) with --interactive. Set to 1 to disable."
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
@@ -454,7 +490,8 @@ Set ANTHROPIC_API_KEY in your .env file or system environment.
                 output_dir,
                 confidence_threshold=args.threshold,
                 auto_correct=auto_correct,
-                recursive=args.recursive
+                recursive=args.recursive,
+                workers=args.workers
             )
             logger.info(f"Batch processing complete: {len(results)} files processed")
 
