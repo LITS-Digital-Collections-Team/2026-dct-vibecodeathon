@@ -147,14 +147,48 @@ Original OCR text:
             "--disallowed-tools", _CLI_DISALLOWED_TOOLS,
         ]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if result.returncode != 0:
-                logger.error(f"claude CLI exited {result.returncode}: {result.stderr.strip()[:200]}")
+            # stdin is pointed at DEVNULL rather than inherited: under the GUI
+            # the parent's stdin is a QProcess pipe that never carries data and
+            # never closes, so the CLI stalls three seconds waiting on it
+            # before every single block.
+            #
+            # Pin the decode to UTF-8, as step 2 does: plain text=True decodes
+            # with the Windows codepage (cp1252), which raises inside
+            # subprocess's reader thread on any character outside it -- curly
+            # quotes, em-dashes, accented letters, all common in corrected
+            # text. That failure surfaces as stdout silently coming back None
+            # with returncode 0, not as a raised exception.
+            result = subprocess.run(
+                cmd, capture_output=True, encoding="utf-8", timeout=120,
+                stdin=subprocess.DEVNULL,
+            )
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+
+            # Substantive failures (expired OAuth, quota, API errors) come back
+            # as JSON on stdout; stderr generally carries only warnings. Parse
+            # stdout first so the log names the real cause, and fall back to
+            # stderr only when stdout is unusable.
+            try:
+                payload = json.loads(stdout)
+            except json.JSONDecodeError:
+                payload = None
+
+            if result.returncode != 0 or (payload or {}).get("is_error"):
+                detail = (payload or {}).get("result") or stderr.strip() or "(no detail)"
+                logger.error(f"claude CLI failed (exit {result.returncode}): {str(detail)[:300]}")
                 return text
 
-            payload = json.loads(result.stdout)
-            if payload.get("is_error"):
-                logger.error(f"claude CLI reported an error: {payload.get('result')}")
+            if payload is None:
+                if not stdout.strip():
+                    # Exit 0 with nothing on stdout: either a transient drop
+                    # mid-request, or output that could not be decoded at all.
+                    logger.error(
+                        f"claude CLI produced no readable output "
+                        f"(stderr: {stderr.strip()[:200] or '<empty>'})"
+                    )
+                else:
+                    logger.error(f"claude CLI returned invalid JSON: {stdout[:200]}")
                 return text
 
             log_claude_usage("text_correct_cli", payload, context=text[:40])
@@ -171,9 +205,6 @@ Original OCR text:
             return corrected
         except subprocess.TimeoutExpired:
             logger.error("claude CLI timed out")
-            return text
-        except json.JSONDecodeError as e:
-            logger.error(f"claude CLI returned invalid JSON: {e}")
             return text
         except Exception as e:
             logger.error(f"claude CLI invocation failed: {e}")
