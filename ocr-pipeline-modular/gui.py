@@ -25,6 +25,21 @@ from utils import OCRDataHandler, TextBlock
 SCRIPT_DIR = Path(__file__).resolve().parent
 PYTHON_EXE = sys.executable
 
+# When frozen (PyInstaller), sys.executable is this GUI's own frozen binary,
+# not a Python interpreter -- it can't be reused to run the numbered scripts'
+# .py files. The build packages each script as its own frozen sibling
+# executable instead, at <app-dir>/<script-stem>/<script-stem>[.exe], and
+# ProcessRunner.run() launches that directly rather than "python script.py".
+FROZEN = bool(getattr(sys, "frozen", False))
+APP_DIR = Path(sys.executable).resolve().parent if FROZEN else SCRIPT_DIR
+
+
+def frozen_sibling_executable(script: str) -> Path:
+    """Path to a script's frozen sibling executable, given its "NN_name.py" filename."""
+    stem = Path(script).stem
+    suffix = ".exe" if sys.platform == "win32" else ""
+    return APP_DIR / stem / f"{stem}{suffix}"
+
 
 def resolve_path(value: str) -> Path:
     """Resolve a user-entered path relative to the pipeline directory."""
@@ -103,13 +118,21 @@ class ProcessRunner(QObject):
         if self.is_running():
             return
         self.process = QProcess()
-        self.process.setProgram(PYTHON_EXE)
-        self.process.setArguments([str(SCRIPT_DIR / script)] + args)
-        self.process.setWorkingDirectory(str(SCRIPT_DIR))
+        if FROZEN:
+            program = str(frozen_sibling_executable(script))
+            self.process.setProgram(program)
+            self.process.setArguments(args)
+            self.process.setWorkingDirectory(str(APP_DIR))
+            display_cmd = f"{program} {' '.join(args)}"
+        else:
+            self.process.setProgram(PYTHON_EXE)
+            self.process.setArguments([str(SCRIPT_DIR / script)] + args)
+            self.process.setWorkingDirectory(str(SCRIPT_DIR))
+            display_cmd = f"{PYTHON_EXE} {script} {' '.join(args)}"
         self.process.setProcessChannelMode(QProcess.MergedChannels)
         self.process.readyReadStandardOutput.connect(self._on_output)
         self.process.finished.connect(self._on_finished)
-        self.line_output.emit(f"$ {PYTHON_EXE} {script} {' '.join(args)}")
+        self.line_output.emit(f"$ {display_cmd}")
         self.process.start()
 
     def _on_output(self):

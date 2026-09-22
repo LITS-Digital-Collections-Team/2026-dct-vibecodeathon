@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import logging
+import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -278,4 +279,10 @@ Examples:
 
 
 if __name__ == "__main__":
+    # Required for --workers > 1's ProcessPoolExecutor: when this script is
+    # frozen (PyInstaller), a spawned worker process re-executes this same
+    # frozen binary, and freeze_support() is what lets it recognize that
+    # re-invocation as a multiprocessing worker instead of parsing sys.argv
+    # as this script's own CLI args. A no-op on non-frozen/non-Windows runs.
+    multiprocessing.freeze_support()
     main()

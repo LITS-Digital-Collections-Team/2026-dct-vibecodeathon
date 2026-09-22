@@ -1,0 +1,78 @@
+name: OCR Pipeline release build
+
+# Builds the "OCR Pipeline" desktop app (see ocr-pipeline-modular/packaging/)
+# for macOS and Windows and publishes both as assets on a GitHub Release.
+#
+# Trigger by pushing a tag like `ocr-pipeline-v1.0.0`:
+#   git tag ocr-pipeline-v1.0.0
+#   git push origin ocr-pipeline-v1.0.0
+
+on:
+  push:
+    tags:
+      - "ocr-pipeline-v*"
+
+jobs:
+  build:
+    defaults:
+      run:
+        working-directory: ocr-pipeline-modular
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            asset_name: OCR-Pipeline-macOS
+          - os: windows-latest
+            asset_name: OCR-Pipeline-Windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r packaging/requirements-build.txt
+
+      - name: Build app
+        run: python packaging/build_app.py --dist-dir dist
+
+      - name: Zip app (macOS)
+        if: runner.os == 'macOS'
+        working-directory: ocr-pipeline-modular/dist
+        run: ditto -c -k --sequesterRsrc --keepParent "OCR Pipeline.app" "${{ matrix.asset_name }}.zip"
+
+      - name: Zip app (Windows)
+        if: runner.os == 'Windows'
+        working-directory: ocr-pipeline-modular/dist
+        run: Compress-Archive -Path "OCR Pipeline" -DestinationPath "${{ matrix.asset_name }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ocr-pipeline-modular/dist/${{ matrix.asset_name }}.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            assets/*.zip

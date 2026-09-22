@@ -22,6 +22,14 @@ logs/
 # Personal local launcher (hardcodes this machine's home-dir paths)
 OCR Pipeline.app/
 
+# packaging/build_app.py output (see packaging/README.md) and raw PyInstaller
+# artifacts from running it directly
+packaging/dist/
+packaging/_build/
+build/
+dist/
+*.spec
+
 # Ad-hoc manual test output
 test_final_output
 
