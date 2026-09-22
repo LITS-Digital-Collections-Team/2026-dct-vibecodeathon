@@ -27,6 +27,18 @@ from utils import (
 
 logger = logging.getLogger(__name__)
 
+# Helvetica ascender - descender, i.e. the line advance PyMuPDF applies per
+# line of text at a given font size.
+LINE_HEIGHT = 1.143
+TEXT_FONTNAME = "helv"
+
+# Floor for the insert_textbox shrink-to-fit loop.
+MIN_FONT_SIZE = 4
+
+# A block covering at least this fraction of the page in both axes is treated
+# as a whole-page transcription rather than a positioned layout block.
+FULL_PAGE_COVERAGE = 0.95
+
 
 class PDFAssembler:
     """Create searchable PDF from image and OCR text."""
@@ -38,6 +50,69 @@ class PDFAssembler:
             debug: If True, show red bounding boxes around text blocks
         """
         self.debug = debug
+
+    def _place_text_unwrapped(
+        self,
+        page: "fitz.Page",
+        rect: "fitz.Rect",
+        text: str
+    ) -> Tuple[int, float]:
+        """Place text line by line with insert_text, which does no wrapping.
+
+        insert_textbox reflows text to the rect width and refuses to draw
+        anything at all if the resulting line count overflows the rect height.
+        That makes it unusable for two cases: whole-page blocks (the
+        claude-vision engine returns the entire page as one block, so the rect
+        *is* the page and there is no slack to shrink into), and blocks whose
+        rect the OCR engine drew too small for the text it assigned.
+
+        insert_text has no such constraint -- it draws each line at the origin
+        given and lets long lines run past the rect. Since the layer is
+        invisible (render_mode=3), overflow costs nothing visually, and a page
+        that keeps its text is strictly better than one that silently loses it.
+
+        Lines are spread evenly over the rect height and indexed by their
+        original position, so blank lines still consume vertical space and
+        paragraph structure survives into the extracted text. Font size is
+        capped by both the per-line vertical slot and the widest line, so the
+        text normally stays inside the rect in both axes.
+
+        Args:
+            page: Page to draw on
+            rect: Block rectangle, in points
+            text: Block text
+
+        Returns:
+            (number of lines placed, font size used)
+        """
+        lines = text.splitlines() or [text]
+        spacing = rect.height / len(lines)
+
+        widest = max(
+            (fitz.get_text_length(ln, fontname=TEXT_FONTNAME, fontsize=10) for ln in lines),
+            default=0.0,
+        )
+        size_by_height = spacing / LINE_HEIGHT
+        size = size_by_height if widest <= 0 else min(size_by_height, rect.width / widest * 10)
+        # Clamp away from zero/negative for degenerate rects; a sub-point font
+        # is fine here because the text is never rendered.
+        size = max(1.0, size)
+
+        placed = 0
+        for i, line in enumerate(lines):
+            if not line.strip():
+                continue
+            # Baseline sits at the bottom of this line's vertical slot.
+            page.insert_text(
+                (rect.x0, rect.y0 + spacing * (i + 1)),
+                line,
+                fontname=TEXT_FONTNAME,
+                fontsize=size,
+                render_mode=3,
+            )
+            placed += 1
+
+        return placed, size
 
     def assemble_pdf(
         self,
@@ -102,28 +177,55 @@ class PDFAssembler:
                     est_font_size = font_size
 
                 try:
-                    # Insert text as a genuinely invisible (render_mode=3) text
-                    # layer. insert_textbox doesn't fit if the requested font
-                    # size leaves no room for line height within text_rect
-                    # (returns a negative fit code rather than raising), so
-                    # shrink the font until it fits or hits a floor.
-                    size = est_font_size
+                    # A block spanning the whole page is a full-page
+                    # transcription, not a positioned layout block. Reflowing
+                    # it with insert_textbox can never succeed -- the rect has
+                    # no slack -- so place it line by line instead. This also
+                    # skips a shrink loop that would run from an absurd
+                    # est_font_size (0.7 * page height) down to the floor.
+                    covers_page = (
+                        width >= pdf_width * FULL_PAGE_COVERAGE
+                        and height >= pdf_height * FULL_PAGE_COVERAGE
+                    )
+
                     fitted = False
-                    while size >= 4:
-                        rc = page.insert_textbox(
-                            text_rect,
-                            text,
-                            fontsize=size,
-                            align=fitz.TEXT_ALIGN_LEFT,
-                            render_mode=3,
-                        )
-                        if rc >= 0:
-                            fitted = True
-                            break
-                        size -= 1
+                    if not covers_page:
+                        # Insert text as a genuinely invisible (render_mode=3)
+                        # text layer. insert_textbox doesn't fit if the
+                        # requested font size leaves no room for line height
+                        # within text_rect (returns a negative fit code rather
+                        # than raising), so shrink the font until it fits or
+                        # hits a floor.
+                        size = est_font_size
+                        while size >= MIN_FONT_SIZE:
+                            rc = page.insert_textbox(
+                                text_rect,
+                                text,
+                                fontsize=size,
+                                align=fitz.TEXT_ALIGN_LEFT,
+                                render_mode=3,
+                            )
+                            if rc >= 0:
+                                fitted = True
+                                break
+                            size -= 1
 
                     if not fitted:
-                        logger.warning(f"Text did not fit block rect even at minimum font size, skipped: {text[:50]!r}")
+                        # Fall back to unwrapped placement rather than dropping
+                        # the text, so the page stays searchable.
+                        placed, used_size = self._place_text_unwrapped(
+                            page, text_rect, text
+                        )
+                        if placed:
+                            logger.debug(
+                                f"Placed {placed} line(s) unwrapped at {used_size:.2f}pt "
+                                f"({'full-page block' if covers_page else 'did not fit block rect'}): "
+                                f"{text[:50]!r}"
+                            )
+                        elif text.strip():
+                            logger.warning(
+                                f"No text could be placed for block: {text[:50]!r}"
+                            )
 
                     if self.debug:
                         # Draw red bounding box for debugging
