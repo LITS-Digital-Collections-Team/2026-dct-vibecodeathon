@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# Secrets
+.env
+
+# Pipeline output directories
+prep_output/
+ocr_output/
+corrected_output/
+pdf_output/
+logs/
+
+# Personal local launcher (hardcodes this machine's home-dir paths)
+OCR Pipeline.app/
+
+# packaging/build_app.py output (see packaging/README.md) and raw PyInstaller
+# artifacts from running it directly
+packaging/dist/
+packaging/_build/
+build/
+dist/
+*.spec
+
+# Ad-hoc manual test output
+test_final_output
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store

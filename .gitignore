@@ -1,6 +1,2 @@
 # macOS
 .DS_Store
-
-# Standalone project with its own separate git repo (see its README) -- not
-# part of this repo, deliberately not a submodule
-ocr-pipeline-sessioned/
