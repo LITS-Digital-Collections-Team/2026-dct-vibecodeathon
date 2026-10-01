@@ -44,6 +44,10 @@ FULL_PAGE_COVERAGE = 0.95
 # The page number is always the last underscore-separated run of digits.
 PAGE_SUFFIX_RE = re.compile(r"^(.*)_(\d+)$")
 
+# Suffix process_image_ocr_pair appends to the source image's stem when
+# naming each per-page PDF (e.g. "SmithLetter_003" -> "SmithLetter_003_searchable.pdf").
+PER_PAGE_PDF_SUFFIX = "_searchable"
+
 
 class PDFAssembler:
     """Create searchable PDF from image and OCR text."""
@@ -279,7 +283,7 @@ class PDFAssembler:
         ocr_output = OCRDataHandler.load_json(ocr_json_path)
 
         # Create PDF
-        output_path = output_dir / f"{image_path.stem}_searchable.pdf"
+        output_path = output_dir / f"{image_path.stem}{PER_PAGE_PDF_SUFFIX}.pdf"
         self.assemble_pdf(image_path, ocr_output, output_path)
 
         return output_path
@@ -463,7 +467,10 @@ class PDFMerger:
         output_dir = Path(output_dir)
         groups = defaultdict(list)
         for pdf_path in pdf_paths:
-            match = PAGE_SUFFIX_RE.match(Path(pdf_path).stem)
+            stem = Path(pdf_path).stem
+            if stem.endswith(PER_PAGE_PDF_SUFFIX):
+                stem = stem[: -len(PER_PAGE_PDF_SUFFIX)]
+            match = PAGE_SUFFIX_RE.match(stem)
             if not match:
                 logger.warning(f"Skipping {pdf_path}: filename has no trailing page number")
                 continue
