@@ -25,6 +25,12 @@ python compare_dirs.py dir1 dir2 --hash sha256
 
 # Combine options
 python compare_dirs.py dir1 dir2 --hash sha256 --output diff_results.csv
+
+# Disable checkpointing (resume support is on by default, see below)
+python compare_dirs.py dir1 dir2 --no-checkpoint
+
+# Reuse an existing hash listing for dir1 instead of rehashing its files
+python compare_dirs.py dir1 dir2 --import-hashes dir1=dir1_hashes.txt
 ```
 
 ## Output
@@ -67,12 +73,35 @@ The script walks each directory recursively, computing a hash for every file (MD
 
 File paths in the output are stored relative to each directory root, so `sub/folder/file.txt` rather than `/full/path/to/dir1/sub/folder/file.txt`.
 
+## Resuming an interrupted scan
+
+Hashing a large directory, especially over a network share, can take a long time, and the connection can drop partway through. By default, the script saves each file's hash (keyed by its size and modification time) to a checkpoint file as it goes, under `.compare_dirs_checkpoints/` in the current directory. If the scan is interrupted — a network error or Ctrl+C — just re-run the exact same command. Files already recorded in the checkpoint are skipped instead of rehashed, so only new or changed files need to be processed.
+
+```bash
+# Use a custom checkpoint location instead of the default .compare_dirs_checkpoints/
+python compare_dirs.py dir1 dir2 --checkpoint-dir /path/to/checkpoints
+
+# Turn off checkpointing entirely
+python compare_dirs.py dir1 dir2 --no-checkpoint
+```
+
+## Importing pre-computed hashes
+
+If you already have a hash listing for one of the directories — say, from a previous `md5sum`/`sha256sum` run, or one of this script's own checkpoint files — you can supply it with `--import-hashes DIR=HASHFILE` to skip rehashing those files entirely:
+
+```bash
+python compare_dirs.py dir1 dir2 --import-hashes dir1=dir1_hashes.txt
+```
+
+`HASHFILE` can be either a plain text listing in the standard `<hash>  <relative_path>` per-line format, or one of this script's own checkpoint JSON files. `DIR` must match one of the positional directories exactly, and the option can be repeated to supply hashes for more than one directory. Imported hashes are trusted as-is and are not re-verified against file size or modification time, so make sure the listing is still accurate and uses the same hash algorithm as `--hash` (MD5 by default) before relying on it.
+
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | `0` | All directories contain the same content |
 | `1` | One or more files are missing from at least one directory |
+| `2` | Scan was interrupted (e.g. network error or Ctrl+C); re-run the same command to resume |
 
 The exit code makes it easy to use the script in shell scripts or CI pipelines:
 
