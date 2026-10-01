@@ -48,6 +48,26 @@ PAGE_SUFFIX_RE = re.compile(r"^(.*)_(\d+)$")
 # naming each per-page PDF (e.g. "SmithLetter_003" -> "SmithLetter_003_searchable.pdf").
 PER_PAGE_PDF_SUFFIX = "_searchable"
 
+# Suffixes earlier pipeline steps append to filenames before they reach this
+# script -- e.g. Step 1 (01_image_prep.py) renames "SmithLetter_003.tif" to
+# "SmithLetter_003_prep.jpg", so by Step 4 the PDF stem is
+# "SmithLetter_003_prep_searchable". These are stripped (outermost first)
+# before the page number is parsed out, so the page number stays the last
+# underscore-digit run once pipeline bookkeeping is removed.
+PIPELINE_FILENAME_SUFFIXES = (PER_PAGE_PDF_SUFFIX, "_prep")
+
+
+def _strip_pipeline_suffixes(stem: str) -> str:
+    """Repeatedly strip known pipeline-added suffixes from a filename stem."""
+    stripped = True
+    while stripped:
+        stripped = False
+        for suffix in PIPELINE_FILENAME_SUFFIXES:
+            if stem.endswith(suffix):
+                stem = stem[: -len(suffix)]
+                stripped = True
+    return stem
+
 
 class PDFAssembler:
     """Create searchable PDF from image and OCR text."""
@@ -467,9 +487,7 @@ class PDFMerger:
         output_dir = Path(output_dir)
         groups = defaultdict(list)
         for pdf_path in pdf_paths:
-            stem = Path(pdf_path).stem
-            if stem.endswith(PER_PAGE_PDF_SUFFIX):
-                stem = stem[: -len(PER_PAGE_PDF_SUFFIX)]
+            stem = _strip_pipeline_suffixes(Path(pdf_path).stem)
             match = PAGE_SUFFIX_RE.match(stem)
             if not match:
                 logger.warning(f"Skipping {pdf_path}: filename has no trailing page number")
