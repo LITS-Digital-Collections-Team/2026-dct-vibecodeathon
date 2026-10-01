@@ -55,10 +55,22 @@ flags (`--session-batch-size`, `--workers`).
 
 ## Everything else
 
-`01_image_prep.py`, `04_pdf_assemble.py`, `05_pdf_merge.py`, `utils.py`, and
-`gui.py` are carried over unchanged from `ocr-pipeline-modular` -- none of
-them call Claude directly, so none of them contributed to the session count
-problem.
+`01_image_prep.py`, `05_pdf_merge.py`, and `utils.py` are carried over
+unchanged from `ocr-pipeline-modular` -- none of them call Claude directly,
+so none of them contributed to the session count problem.
+
+`04_pdf_assemble.py` and `gui.py` are likewise carried over from
+`ocr-pipeline-modular` for the same reason, but have since gained one
+addition unrelated to the session-batching fix: `--merge-per-basename`
+(and the matching GUI checkbox on the "Step 4: PDF Assembly" tab). It's for
+a flat folder holding pages from multiple documents, each named
+`<document>_<page_number>.<ext>` (e.g. `SmithLetter_001.tif`,
+`SmithLetter_002.tif`, `JonesReport_001.tif`) -- it groups the resulting
+per-page PDFs by document, sorts each group's pages numerically, and
+merges each into its own `<document>.pdf` under `--output-dir`. This is an
+alternative to the existing `--recursive`/`--merge-per-folder` combination,
+for when documents live side by side in one folder instead of in separate
+subfolders. See `python 04_pdf_assemble.py --help` for usage.
 
 This project does not (yet) carry over `ocr-pipeline-modular/packaging/`
 (the frozen Mac/Windows app build). That can be ported over on request; it
