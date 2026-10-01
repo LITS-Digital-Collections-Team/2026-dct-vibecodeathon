@@ -23,6 +23,7 @@ Attribution:
 import csv
 import argparse
 import hashlib
+import json
 import os
 import sys
 
@@ -32,6 +33,76 @@ IGNORE_NAMES = {'.DS_Store', 'Thumbs.db', 'desktop.ini'}
 
 # Read files in 64 KB chunks so large files don't load fully into memory
 CHUNK_SIZE = 65536
+
+# Save the checkpoint file to disk after this many newly-hashed files
+CHECKPOINT_INTERVAL = 50
+
+# Default location for checkpoint files, used unless --checkpoint-dir or
+# --no-checkpoint is given
+DEFAULT_CHECKPOINT_DIR = '.compare_dirs_checkpoints'
+
+
+def checkpoint_path_for(dirpath, checkpoint_dir):
+    """Derive a stable checkpoint filename for a scanned directory."""
+    safe_name = "".join(c if c.isalnum() else "_" for c in os.path.abspath(dirpath))
+    return os.path.join(checkpoint_dir, f"{safe_name}.json")
+
+
+def load_checkpoint(path):
+    """Load a checkpoint file, returning {} if it doesn't exist or is unreadable."""
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        print(f"Warning: could not read checkpoint {path}, starting fresh.", file=sys.stderr)
+        return {}
+
+
+def save_checkpoint(path, records):
+    """Write the checkpoint atomically so a crash mid-write can't corrupt it."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = path + '.tmp'
+    with open(tmp_path, 'w') as f:
+        json.dump(records, f)
+    os.replace(tmp_path, path)
+
+
+def load_external_hashes(path):
+    """Load a pre-computed hash listing supplied by the user.
+
+    Supports two formats, auto-detected:
+      - This script's own checkpoint JSON: {rel_path: {size, mtime, hash}}
+      - Plain md5sum/sha256sum-style text: "<hash>  <rel_path>" per line
+
+    Returns a dict {rel_path: hash}. Hashes from a plain-text listing carry no
+    size/mtime, so they are trusted as-is rather than freshness-checked --
+    the caller is asserting these hashes are already known-good.
+    """
+    with open(path, 'r') as f:
+        content = f.read()
+
+    try:
+        data = json.loads(content)
+        if isinstance(data, dict):
+            return {rel_path: entry['hash'] for rel_path, entry in data.items()}
+    except (json.JSONDecodeError, KeyError, TypeError):
+        pass
+
+    hashes = {}
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        hash_val, rel_path = parts
+        rel_path = rel_path.strip().lstrip('*')  # md5sum marks binary mode with a leading '*'
+        rel_path = rel_path.replace('\\', os.sep).replace('/', os.sep)
+        hashes[rel_path] = hash_val
+    return hashes
 
 
 def resolve_output_path(path):
@@ -64,12 +135,23 @@ def hash_file(path, algorithm='md5'):
     return h.hexdigest()
 
 
-def scan_directory(dirpath, algorithm='md5'):
+def scan_directory(dirpath, algorithm='md5', checkpoint_file=None, external_hashes=None):
     """Recursively walk a directory and return a dict mapping hash -> {FILE_PATH, NAME}.
 
     FILE_PATH is stored relative to dirpath so paths are comparable across
     different root directories. Files in IGNORE_NAMES are silently skipped.
     Permission errors are warned and skipped rather than crashing the script.
+
+    If checkpoint_file is given, per-file results (size, mtime, hash) are
+    loaded from it up front and skipped on this run if the file is unchanged,
+    and progress is saved back to it periodically. If the walk is interrupted
+    (Ctrl+C, or the directory becoming unreachable, e.g. a network drop), the
+    checkpoint is saved before exiting so a re-run of the same command can
+    resume instead of re-hashing everything.
+
+    If external_hashes is given (a {rel_path: hash} dict from a pre-computed
+    hash listing), those hashes are trusted outright and never recomputed,
+    even on a file's first pass through this directory.
     """
     items = {}
 
@@ -80,33 +162,73 @@ def scan_directory(dirpath, algorithm='md5'):
         print(f"Error: not a directory: {dirpath}", file=sys.stderr)
         sys.exit(1)
 
+    records = load_checkpoint(checkpoint_file) if checkpoint_file else {}
+    if records:
+        print(f"  Resuming {dirpath} from checkpoint: {len(records)} files already hashed.")
+    external_hashes = external_hashes or {}
+    if external_hashes:
+        print(f"  Loaded {len(external_hashes)} pre-computed hashes for {dirpath}.")
+    unsaved_count = 0
+
+    def flush():
+        if checkpoint_file and unsaved_count:
+            save_checkpoint(checkpoint_file, records)
+
     file_count = 0
-    for root, dirs, files in os.walk(dirpath):
-        dirs.sort()  # Sort for deterministic traversal order
-        for name in sorted(files):
-            if name in IGNORE_NAMES:
-                continue
+    try:
+        for root, dirs, files in os.walk(dirpath):
+            dirs.sort()  # Sort for deterministic traversal order
+            for name in sorted(files):
+                if name in IGNORE_NAMES:
+                    continue
 
-            abs_path = os.path.join(root, name)
-            rel_path = os.path.relpath(abs_path, dirpath)
+                abs_path = os.path.join(root, name)
+                rel_path = os.path.relpath(abs_path, dirpath)
 
-            try:
-                # Show a live progress line that overwrites itself
-                print(f"  Scanning {dirpath}: {file_count} files hashed...", end='\r')
-                key = hash_file(abs_path, algorithm)
-                file_count += 1
+                try:
+                    stat = os.stat(abs_path)
+                    record = records.get(rel_path)
+                    if record and record.get('size') == stat.st_size and record.get('mtime') == stat.st_mtime:
+                        key = record['hash']
+                    elif rel_path in external_hashes:
+                        key = external_hashes[rel_path]
+                        records[rel_path] = {'size': stat.st_size, 'mtime': stat.st_mtime, 'hash': key}
+                        unsaved_count += 1
+                        if checkpoint_file and unsaved_count >= CHECKPOINT_INTERVAL:
+                            flush()
+                            unsaved_count = 0
+                    else:
+                        # Show a live progress line that overwrites itself
+                        print(f"  Scanning {dirpath}: {file_count} files hashed...", end='\r')
+                        key = hash_file(abs_path, algorithm)
+                        records[rel_path] = {'size': stat.st_size, 'mtime': stat.st_mtime, 'hash': key}
+                        unsaved_count += 1
+                        if checkpoint_file and unsaved_count >= CHECKPOINT_INTERVAL:
+                            flush()
+                            unsaved_count = 0
 
-                if key in items:
-                    # Two files in the same directory with identical content
-                    print(f"\nWarning: duplicate content in {dirpath}: "
-                          f"{rel_path} matches {items[key]['FILE_PATH']}")
-                else:
-                    items[key] = {
-                        'FILE_PATH': rel_path,
-                        'NAME':      name,
-                    }
-            except PermissionError:
-                print(f"\nWarning: permission denied, skipping: {abs_path}", file=sys.stderr)
+                    file_count += 1
+
+                    if key in items:
+                        # Two files in the same directory with identical content
+                        print(f"\nWarning: duplicate content in {dirpath}: "
+                              f"{rel_path} matches {items[key]['FILE_PATH']}")
+                    else:
+                        items[key] = {
+                            'FILE_PATH': rel_path,
+                            'NAME':      name,
+                        }
+                except PermissionError:
+                    print(f"\nWarning: permission denied, skipping: {abs_path}", file=sys.stderr)
+    except (OSError, KeyboardInterrupt) as e:
+        flush()
+        print(f"\n\nInterrupted while scanning {dirpath}: {e}", file=sys.stderr)
+        if checkpoint_file:
+            print(f"Progress saved to {checkpoint_file} ({len(records)} files).", file=sys.stderr)
+            print("Re-run the same command to resume from here.", file=sys.stderr)
+        raise SystemExit(2)
+
+    flush()
 
     # Print final count on a clean line
     print(f"  Scanned {dirpath}: {file_count} files hashed.       ")
@@ -187,14 +309,56 @@ def main():
         default='md5',
         help='Hash algorithm to use (default: md5)',
     )
+    parser.add_argument(
+        '--checkpoint-dir',
+        dest='checkpoint_dir',
+        default=DEFAULT_CHECKPOINT_DIR,
+        help='Directory to store per-source checkpoint files, enabling resume '
+             f'after an interruption (e.g. a network drop or Ctrl+C). Defaults '
+             f'to "{DEFAULT_CHECKPOINT_DIR}" in the current directory. Re-running '
+             'the same command from the same location picks up where it left '
+             'off instead of re-hashing everything.',
+    )
+    parser.add_argument(
+        '--no-checkpoint',
+        dest='checkpoint_dir',
+        action='store_const',
+        const=None,
+        help='Disable checkpointing entirely (no resume support).',
+    )
+    parser.add_argument(
+        '--import-hashes',
+        dest='import_hashes',
+        action='append',
+        default=[],
+        metavar='DIR=HASHFILE',
+        help='Reuse pre-computed hashes for one of the directories being '
+             'compared instead of rehashing its files. DIR must match one of '
+             'the positional directories exactly. HASHFILE may be an '
+             'md5sum/sha256sum-style text listing ("<hash>  <rel_path>" per '
+             'line) or one of this script\'s own checkpoint JSON files. Can '
+             'be repeated for multiple directories.',
+    )
     args = parser.parse_args()
 
     if len(args.dirs) < 2:
         parser.error('At least two directories are required.')
 
+    import_hashes_by_dir = {}
+    for entry in args.import_hashes:
+        if '=' not in entry:
+            parser.error(f'--import-hashes must be in the form DIR=HASHFILE, got: {entry}')
+        dir_key, hash_file_path = entry.split('=', 1)
+        if dir_key not in args.dirs:
+            parser.error(f'--import-hashes directory "{dir_key}" is not one of the directories being compared: {args.dirs}')
+        import_hashes_by_dir[dir_key] = load_external_hashes(hash_file_path)
+
     # Scan each directory and build hash -> file maps
     print(f"Hashing files ({args.algorithm})...")
-    all_items = {d: scan_directory(d, args.algorithm) for d in args.dirs}
+    all_items = {}
+    for d in args.dirs:
+        checkpoint_file = checkpoint_path_for(d, args.checkpoint_dir) if args.checkpoint_dir else None
+        all_items[d] = scan_directory(d, args.algorithm, checkpoint_file, import_hashes_by_dir.get(d))
 
     # Find hashes missing from one or more directories
     diff_rows, dirnames = build_diff_rows(all_items, args.algorithm)
