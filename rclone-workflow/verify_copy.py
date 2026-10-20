@@ -10,6 +10,10 @@ Only flags:
 
 Pre-existing destination files (not in the source checksum file) are ignored.
 
+Resumable: destination checksums are written to disk as they are computed. If a
+run is interrupted, pass the partial *_dest.md5 file it left behind via
+--resume to continue where it stopped instead of re-hashing everything.
+
 Usage:
     python verify_copy.py <destination> <source_checksums> [options]
 
@@ -20,12 +24,16 @@ Examples:
 
 import argparse
 import hashlib
+import re
+import signal
 import sys
 import logging
 from datetime import datetime
 from pathlib import Path
 
 LOG_DIR = Path(".")
+EXIT_INTERRUPTED = 130
+_CHECKSUM_LINE = re.compile(r"^[0-9a-fA-F]{32}  .+")
 
 
 def _is_network_path(path: Path) -> bool:
@@ -49,6 +57,14 @@ def parse_args() -> argparse.Namespace:
         metavar="DIR",
         help="Directory for the destination checksum file and log (default: current directory)",
     )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Partial destination checksum file (*_dest.md5) from an interrupted run; "
+             "files already hashed in it are not re-read",
+    )
     args, _ = parser.parse_known_args()
     return args
 
@@ -69,6 +85,50 @@ def setup_logging(log_dir: Path, timestamp: str) -> tuple[logging.Logger, Path]:
     return logging.getLogger(__name__), log_file
 
 
+def _raise_interrupt(signum, frame):
+    raise KeyboardInterrupt
+
+
+def install_signal_handlers() -> None:
+    """Turn SIGTERM / SIGBREAK / SIGHUP into KeyboardInterrupt (same path as Ctrl+C)."""
+    for name in ("SIGTERM", "SIGBREAK", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, _raise_interrupt)
+            except (ValueError, OSError):
+                pass
+
+
+def recover_partial_checksums(dest_checksum_file: Path, log: logging.Logger) -> set[str]:
+    """
+    Read a destination checksum file left behind by an interrupted run and
+    return the set of relative paths already hashed.
+
+    Only complete, well-formed lines are kept. A truncated final line (the run
+    was killed mid-write) or any malformed line is dropped, and the file is
+    rewritten without it so new results can be appended safely.
+    """
+    if not dest_checksum_file.exists():
+        return set()
+
+    good: list[str] = []
+    dropped = 0
+    with open(dest_checksum_file, "r", newline="") as f:
+        for raw in f:
+            if raw.endswith("\n") and _CHECKSUM_LINE.match(raw.rstrip("\r\n")):
+                good.append(raw)
+            else:
+                dropped += 1
+
+    if dropped:
+        log.warning("Dropped %d incomplete line(s) from the partial destination checksum file.", dropped)
+        with open(dest_checksum_file, "w", newline="\n") as f:
+            f.writelines(good)
+
+    return {line.rstrip("\r\n").split("  ", 1)[1] for line in good}
+
+
 def checksum_destination(
     dest_root: str,
     source_file: Path,
@@ -82,6 +142,9 @@ def checksum_destination(
     Only the files that were copied (those in source_file) are read — the
     destination directory is never enumerated and pre-existing content is never
     touched.
+
+    Each result is appended and flushed to dest_checksum_file as it is computed.
+    If the file already exists (--resume), files already hashed are skipped.
 
     Writes results to dest_checksum_file in rclone md5sum format.
     Returns the count of files that could not be checksummed.
@@ -97,23 +160,28 @@ def checksum_destination(
                 paths.append(parts[1])
 
     total = len(paths)
-    log.info("Computing MD5 checksums for %d destination files...", total)
+    already = recover_partial_checksums(dest_checksum_file, log)
+    if already:
+        log.info("Resuming: %d of %d destination files already checksummed.", len(already), total)
+    log.info("Computing MD5 checksums for %d destination files...", total - len(already))
     dest  = Path(dest_root)
     errors = 0
     report_every = max(1, total // 100)   # log progress ~every 1%
 
-    with open(dest_checksum_file, "w", newline="\n") as out:
+    with open(dest_checksum_file, "a", newline="\n") as out:
         for i, rel_path in enumerate(paths, 1):
-            full_path = dest / Path(rel_path)
-            try:
-                h = hashlib.md5()
-                with open(full_path, "rb") as fh:
-                    while chunk := fh.read(4 * 1024 * 1024):
-                        h.update(chunk)
-                out.write(f"{h.hexdigest()}  {rel_path}\n")
-            except OSError as e:
-                log.warning("Cannot checksum %s: %s", rel_path, e)
-                errors += 1
+            if rel_path not in already:
+                full_path = dest / Path(rel_path)
+                try:
+                    h = hashlib.md5()
+                    with open(full_path, "rb") as fh:
+                        while chunk := fh.read(4 * 1024 * 1024):
+                            h.update(chunk)
+                    out.write(f"{h.hexdigest()}  {rel_path}\n")
+                    out.flush()
+                except OSError as e:
+                    log.warning("Cannot checksum %s: %s", rel_path, e)
+                    errors += 1
 
             if i % report_every == 0 or i == total:
                 log.info("  %d / %d files  (%d%%)...", i, total, i * 100 // total)
@@ -172,6 +240,7 @@ def compare_checksums(source_file: Path, dest_file: Path, log: logging.Logger) -
 
 def main() -> None:
     args      = parse_args()
+    install_signal_handlers()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     if _is_network_path(args.log_dir):
@@ -189,7 +258,13 @@ def main() -> None:
         print(f"ERROR: source checksum file not found: {source_checksums}", file=sys.stderr)
         sys.exit(1)
 
-    dest_checksum_file = (args.log_dir / f"verify_{timestamp}_dest.md5").resolve()
+    if args.resume:
+        dest_checksum_file = args.resume.resolve()
+        if not dest_checksum_file.exists():
+            print(f"ERROR: --resume file not found: {dest_checksum_file}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        dest_checksum_file = (args.log_dir / f"verify_{timestamp}_dest.md5").resolve()
 
     log.info("verify_copy.py starting")
     log.info("  Destination         : %s", args.destination)
@@ -199,7 +274,12 @@ def main() -> None:
 
     print("\n[Step 1/2] Checksumming destination files (progress logged every 1%)...", flush=True)
     log.info("=== Step 1: checksum destination ===")
-    errors = checksum_destination(args.destination, source_checksums, dest_checksum_file, log)
+    try:
+        errors = checksum_destination(args.destination, source_checksums, dest_checksum_file, log)
+    except KeyboardInterrupt:
+        log.warning("INTERRUPTED during destination checksumming.")
+        log.warning("Resume with: --resume %s", dest_checksum_file)
+        sys.exit(EXIT_INTERRUPTED)
     log.info("Destination checksums saved -> %s\n", dest_checksum_file)
     print(f"[Step 1/2] Done. Destination checksums saved -> {dest_checksum_file}", flush=True)
     if errors > 0:

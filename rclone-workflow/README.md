@@ -10,6 +10,8 @@ The verify step never re-reads the source, so it works correctly even when the s
 
 Both the log and checksum files are timestamped and written to the log directory.
 
+The workflow is **resumable**: if it is interrupted at any step, re-run the same command and it continues from where it stopped (see [Resuming an interrupted run](#resuming-an-interrupted-run)).
+
 ## Requirements
 
 - Python 3.10+
@@ -18,7 +20,7 @@ Both the log and checksum files are timestamped and written to the log directory
 ## Usage
 
 ```
-python rclone_workflow.py <source> <destination> [--dry-run] [--log-dir DIR] [extra rclone flags...]
+python rclone_workflow.py <source> <destination> [--dry-run] [--log-dir DIR] [--restart] [extra rclone flags...]
 ```
 
 | Argument | Description |
@@ -26,7 +28,8 @@ python rclone_workflow.py <source> <destination> [--dry-run] [--log-dir DIR] [ex
 | `source` | Local path or rclone remote, e.g. `/data/photos` or `gdrive:folder` |
 | `destination` | Local path or rclone remote |
 | `--dry-run`, `-n` | Simulate the copy; skips md5sum and verify steps |
-| `--log-dir DIR` | Where to write log and checksum files (default: current directory) |
+| `--log-dir DIR` | Where to write log, checksum and progress files (default: current directory). Use the same directory when resuming |
+| `--restart` | Discard saved progress for this source/destination and start a fresh run |
 | `...` | Any additional flags are forwarded directly to `rclone copy` and the verify steps |
 
 ## Examples
@@ -50,15 +53,16 @@ python rclone_workflow.py /data/photos gdrive:backup --log-dir /var/log/rclone -
 
 ## Output files
 
-Each run produces three timestamped files in the log directory (skipped in dry-run mode):
+Each run produces these files in the log directory (skipped in dry-run mode):
 
 | File | Contents |
 |---|---|
-| `rclone_YYYYMMDD_HHMMSS.log` | Full log of all steps and rclone output |
-| `rclone_YYYYMMDD_HHMMSS.md5` | MD5 checksums of the source tree, taken before the copy |
-| `rclone_YYYYMMDD_HHMMSS_dest.md5` | MD5 checksums of the copied files at the destination, taken after the copy |
+| `rclone_YYYYMMDD_HHMMSS.log` | Full log of all steps and rclone output (a resumed run appends to the same log) |
+| `rclone_YYYYMMDD_HHMMSS.md5` | MD5 checksums of the source tree, taken before the copy. Written as `.md5.partial` and renamed only when complete, so a file with this name is always whole |
+| `rclone_YYYYMMDD_HHMMSS_dest.md5` | MD5 checksums of the copied files at the destination, taken after the copy. Appended as it goes, so it may be partial after an interruption |
+| `rclone_<jobid>.state.json` | Progress record for this source/destination pair (which steps are done). `<jobid>` is a hash of the source and destination |
 
-Dry runs produce `rclone_YYYYMMDD_HHMMSS_dryrun.log` only.
+Dry runs produce `rclone_YYYYMMDD_HHMMSS_dryrun.log` only and never read or write progress state.
 
 > **Note:** Use a local directory for `--log-dir` wherever possible. If the log directory is on a network path and the connection drops, the script may hang on any write to the log or checksum files.
 
@@ -83,7 +87,7 @@ A standalone script for verifying a destination against a source checksum file p
 ### Usage
 
 ```
-python verify_copy.py <destination> <source_checksums> [--log-dir DIR] [extra rclone flags...]
+python verify_copy.py <destination> <source_checksums> [--log-dir DIR] [--resume FILE]
 ```
 
 | Argument | Description |
@@ -91,11 +95,15 @@ python verify_copy.py <destination> <source_checksums> [--log-dir DIR] [extra rc
 | `destination` | The destination path or rclone remote to checksum |
 | `source_checksums` | The `.md5` file produced by `rclone_workflow.py` step 1 |
 | `--log-dir DIR` | Where to write the destination checksum file and log (default: current directory) |
+| `--resume FILE` | Partial `verify_*_dest.md5` file from an interrupted run; files already hashed in it are not re-read |
 
 ### Example
 
 ```bash
 python verify_copy.py \\libdata.hamilton.edu\Data\ rclone_20260611_114946.md5 --log-dir C:\logs
+
+# Continue an interrupted verification
+python verify_copy.py \\libdata.hamilton.edu\Data\ rclone_20260611_114946.md5 --resume C:\logs\verify_20260612_090000_dest.md5
 ```
 
 ### Output files
@@ -118,9 +126,29 @@ Files at the destination that are not in the source checksum file (e.g. pre-exis
 
 ---
 
+## Resuming an interrupted run
+
+Progress is saved to `rclone_<jobid>.state.json` after each step. If the run is interrupted — Ctrl+C, a dropped network connection, a killed process — re-run **the same command** (same source, destination, `--log-dir` and rclone flags):
+
+| Interrupted during | On re-run |
+|---|---|
+| Step 1 (source md5sum) | Step 1 starts over. The incomplete `.md5.partial` is overwritten |
+| Step 2 (copy) | Step 1 is skipped and its checksums reused. The copy re-runs; `rclone copy` only transfers what is still missing or different. An interrupted file restarts from the beginning |
+| Step 3a (destination checksums) | Steps 1 and 2 are skipped. Files already hashed are not re-read. A truncated last line is discarded |
+| Step 3b (comparison) | Steps 1 and 2 are skipped and the destination checksums are reused |
+
+Notes:
+
+- **Same flags required.** If the extra rclone flags differ from those the unfinished run was started with, the script refuses to resume, since filters change what the source snapshot contains. Re-run with the original flags, or add `--restart`.
+- **Finished runs don't resume.** Re-running a command whose last run completed starts a new run.
+- **Verification failure.** If step 3b finds missing files or hash mismatches, the copy and verify steps are marked pending. Re-running the command re-copies (only what is missing or changed) and re-verifies against the *same* source snapshot. Use `--restart` to take a new snapshot instead. Note that a file the copy skipped because its size and modification time matched cannot be repaired by re-copying; add `--checksum` on the original run if that matters.
+- **Source changes.** The step 1 snapshot is reused on resume. If the source changed in the meantime, the differences will be reported by the verify step. Use `--restart` to take a fresh snapshot.
+- **Interrupt handling.** On Ctrl+C, SIGTERM or Ctrl+Break the script stops the running rclone process, logs where it was, and exits with code 130. A hard kill of the Python process (for example from Task Manager) cannot clean up, so check for a stray `rclone` process; the saved progress is still safe to resume from.
+- **Starting over.** `--restart` deletes the saved progress for that source/destination. Old checksum and log files are left in place.
+
 ## Behaviour on failure
 
-Steps 1 and 2 abort immediately on any non-zero rclone exit code, leaving the destination in whatever state it reached. The source `.md5` checksum file can be used to audit the source after the fact.
+Steps 1 and 2 abort immediately on any non-zero rclone exit code, leaving the destination in whatever state it reached. The source `.md5` checksum file can be used to audit the source after the fact. Progress is saved, so the same command can be re-run to resume.
 
 Step 3a (destination checksum) continues to the comparison step even if some files could not be checksummed — a warning is logged and the comparison proceeds with whatever was successfully hashed. Step 3b (comparison) exits with code 1 if any files are missing or have hash mismatches.
 
