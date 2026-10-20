@@ -56,6 +56,22 @@ DEFAULT_COPY_FLAGS = DEFAULT_SHARED_FLAGS + [
 LOG_DIR = Path(".")   # directory to write log and checksum files
 
 EXIT_INTERRUPTED = 130
+# rclone's documented exit codes. This script passes them through unchanged, so
+# the code shown in "FAILED (exit code N)" is rclone's, not the script's.
+# (The script's own code for an interruption is EXIT_INTERRUPTED.)
+RCLONE_EXIT_CODES = {
+    1: "error not otherwise categorised",
+    2: "syntax or usage error",
+    3: "directory not found (also seen when a source or destination drive/share "
+       "disappears mid-run)",
+    4: "file not found",
+    5: "temporary error (retrying may fix it)",
+    6: "less serious errors that are not retried",
+    7: "fatal error that retrying will not fix (e.g. account suspended)",
+    8: "transfer limit exceeded (--max-transfer)",
+    9: "operation successful but no files transferred",
+    10: "duration limit exceeded (--max-duration)",
+}
 _CHECKSUM_LINE = re.compile(r"^[0-9a-fA-F]{32}  .+")
 
 
@@ -288,7 +304,8 @@ def run(cmd: list[str], label: str, log: logging.Logger,
         stdout_path: Path | None = None,
         is_copy: bool = False,
         is_check: bool = False,
-        warn_only: bool = False) -> int:
+        warn_only: bool = False,
+        resume_hint: str | None = None) -> int:
     """
     Run a shell command and stream its output live to the terminal and log.
     - stderr is always streamed live (rclone progress/stats).
@@ -300,6 +317,8 @@ def run(cmd: list[str], label: str, log: logging.Logger,
       distinguished from higher exit codes (did not complete successfully).
     - Set warn_only=True to log errors and return the exit code instead of
       aborting, allowing the caller to decide how to proceed.
+    - On failure, the meaning of rclone's exit code is logged, followed by
+      resume_hint (if given) telling the user how to continue.
     - If the run is interrupted (KeyboardInterrupt), the child process is
       terminated before the exception propagates.
     Returns the exit code. Exits the process on non-zero unless warn_only=True.
@@ -371,6 +390,11 @@ def run(cmd: list[str], label: str, log: logging.Logger,
             )
         else:
             log.error("FAILED (exit code %d) — aborting.", rc)
+        meaning = RCLONE_EXIT_CODES.get(rc)
+        if meaning:
+            log.error("rclone exit code %d: %s.", rc, meaning)
+        if resume_hint:
+            log.error("%s", resume_hint)
         if warn_only:
             return rc
         sys.exit(rc)
@@ -610,6 +634,11 @@ def main() -> None:
         log.info("  Progress file       : %s", state.path)
     log.info("")
 
+    resume_hint = (
+        "Progress is saved. Fix the cause (for example, reconnect the drive or share), "
+        "then re-run the same command to resume from this step."
+    )
+
     current = "starting up"
     try:
         # Step 1 — checksum the source before touching anything (skipped in dry run).
@@ -628,6 +657,7 @@ def main() -> None:
                 "Step 1: md5sum source",
                 log,
                 stdout_path=checksum_partial,
+                resume_hint=resume_hint,
             )
             os.replace(checksum_partial, checksum_file)
             state.mark("checksum_source")
@@ -650,6 +680,7 @@ def main() -> None:
                 "Step 2: copy" + (" [DRY RUN]" if args.dry_run else ""),
                 log,
                 is_copy=True,
+                resume_hint=None if args.dry_run else resume_hint,
             )
             if not args.dry_run:
                 state.mark("copy")

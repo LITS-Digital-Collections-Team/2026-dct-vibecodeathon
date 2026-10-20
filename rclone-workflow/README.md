@@ -148,7 +148,9 @@ Notes:
 
 ## Behaviour on failure
 
-Steps 1 and 2 abort immediately on any non-zero rclone exit code, leaving the destination in whatever state it reached. The source `.md5` checksum file can be used to audit the source after the fact. Progress is saved, so the same command can be re-run to resume.
+Steps 1 and 2 abort immediately on any non-zero rclone exit code, leaving the destination in whatever state it reached. The script exits with **rclone's own exit code**, and the log explains what it means (for example, `3` is "directory not found", which is also what rclone reports when a source or destination drive or share disappears mid-run). Progress is saved, and the log ends with a reminder to re-run the same command to resume.
+
+The script's own exit code for an interruption (Ctrl+C, SIGTERM, Ctrl+Break) is `130`, always preceded by an `INTERRUPTED during …` message.
 
 Step 3a (destination checksum) continues to the comparison step even if some files could not be checksummed — a warning is logged and the comparison proceeds with whatever was successfully hashed. Step 3b (comparison) exits with code 1 if any files are missing or have hash mismatches.
 
