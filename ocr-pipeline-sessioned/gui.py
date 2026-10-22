@@ -536,6 +536,10 @@ class PdfAssembleTab(RunnableStepTab):
         self.merge_output = QLineEdit()
         self.recursive = QCheckBox("Recursive (scan subfolders, mirror structure into output)")
         self.merge_per_folder = QCheckBox("Merge each subfolder into one PDF per folder (requires Recursive)")
+        self.merge_per_basename = QCheckBox(
+            "Merge pages sharing a base filename into one PDF per document "
+            "(e.g. SmithLetter_001, SmithLetter_002)"
+        )
 
         form.addRow("Image directory:", self.image_dir)
         form.addRow("OCR/corrected JSON directory:", self.ocr_dir)
@@ -544,6 +548,7 @@ class PdfAssembleTab(RunnableStepTab):
         form.addRow("Merge into single PDF (optional filename):", self.merge_output)
         form.addRow(self.recursive)
         form.addRow(self.merge_per_folder)
+        form.addRow(self.merge_per_basename)
 
         self.run_button = QPushButton("Run PDF Assembly")
         self.run_button.clicked.connect(self._run)
@@ -561,6 +566,14 @@ class PdfAssembleTab(RunnableStepTab):
             )
             return
 
+        if self.merge_per_folder.isChecked() and self.merge_per_basename.isChecked():
+            QMessageBox.warning(
+                self, "Conflicting options",
+                "Choose either \"Merge each subfolder into one PDF per folder\" or "
+                "\"Merge pages sharing a base filename\", not both."
+            )
+            return
+
         args = [
             "--image-dir", str(self.image_dir.path()),
             "--ocr-dir", str(self.ocr_dir.path()),
@@ -574,6 +587,8 @@ class PdfAssembleTab(RunnableStepTab):
             args.append("--recursive")
         if self.merge_per_folder.isChecked():
             args.append("--merge-per-folder")
+        if self.merge_per_basename.isChecked():
+            args.append("--merge-per-basename")
         self.start_run("04_pdf_assemble.py", args)
 
 

@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import logging
+import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
@@ -38,6 +39,34 @@ MIN_FONT_SIZE = 4
 # A block covering at least this fraction of the page in both axes is treated
 # as a whole-page transcription rather than a positioned layout block.
 FULL_PAGE_COVERAGE = 0.95
+
+# Splits a filename stem like "SmithLetter_003" into ("SmithLetter", "003").
+# The page number is always the last underscore-separated run of digits.
+PAGE_SUFFIX_RE = re.compile(r"^(.*)_(\d+)$")
+
+# Suffix process_image_ocr_pair appends to the source image's stem when
+# naming each per-page PDF (e.g. "SmithLetter_003" -> "SmithLetter_003_searchable.pdf").
+PER_PAGE_PDF_SUFFIX = "_searchable"
+
+# Suffixes earlier pipeline steps append to filenames before they reach this
+# script -- e.g. Step 1 (01_image_prep.py) renames "SmithLetter_003.tif" to
+# "SmithLetter_003_prep.jpg", so by Step 4 the PDF stem is
+# "SmithLetter_003_prep_searchable". These are stripped (outermost first)
+# before the page number is parsed out, so the page number stays the last
+# underscore-digit run once pipeline bookkeeping is removed.
+PIPELINE_FILENAME_SUFFIXES = (PER_PAGE_PDF_SUFFIX, "_prep")
+
+
+def _strip_pipeline_suffixes(stem: str) -> str:
+    """Repeatedly strip known pipeline-added suffixes from a filename stem."""
+    stripped = True
+    while stripped:
+        stripped = False
+        for suffix in PIPELINE_FILENAME_SUFFIXES:
+            if stem.endswith(suffix):
+                stem = stem[: -len(suffix)]
+                stripped = True
+    return stem
 
 
 class PDFAssembler:
@@ -274,7 +303,7 @@ class PDFAssembler:
         ocr_output = OCRDataHandler.load_json(ocr_json_path)
 
         # Create PDF
-        output_path = output_dir / f"{image_path.stem}_searchable.pdf"
+        output_path = output_dir / f"{image_path.stem}{PER_PAGE_PDF_SUFFIX}.pdf"
         self.assemble_pdf(image_path, ocr_output, output_path)
 
         return output_path
@@ -359,12 +388,16 @@ class PDFMerger:
     """Merge multiple PDFs into single document."""
 
     @staticmethod
-    def merge_pdfs(pdf_paths: List[Path], output_path: Path) -> None:
+    def merge_pdfs(pdf_paths: List[Path], output_path: Path, preserve_order: bool = False) -> None:
         """Merge multiple PDFs.
 
         Args:
             pdf_paths: List of PDF file paths
             output_path: Output merged PDF path
+            preserve_order: If True, insert pdf_paths in the order given
+                (callers that have already computed the correct page order,
+                e.g. numeric order, pass this). If False (default), sort
+                paths lexicographically first.
         """
         if not pdf_paths:
             logger.warning("No PDFs to merge")
@@ -372,10 +405,12 @@ class PDFMerger:
 
         logger.info(f"Merging {len(pdf_paths)} PDF(s)")
 
+        ordered_paths = pdf_paths if preserve_order else sorted(pdf_paths)
+
         try:
             output_doc = fitz.open()
 
-            for pdf_path in sorted(pdf_paths):
+            for pdf_path in ordered_paths:
                 try:
                     pdf = fitz.open(pdf_path)
                     output_doc.insert_pdf(pdf)
@@ -431,6 +466,44 @@ class PDFMerger:
 
         return merged_paths
 
+    @staticmethod
+    def merge_per_basename(pdf_paths: List[Path], output_dir: Path) -> List[Path]:
+        """Merge PDFs sharing a base filename into one PDF per base name.
+
+        For a flat folder containing multiple documents whose pages were
+        scanned as separate files named "<base>_<page_number>.<ext>" (e.g.
+        "SmithLetter_001.tif", "SmithLetter_002.tif", "JonesReport_001.tif"),
+        groups the per-page PDFs by <base> and merges each group's pages in
+        numeric page order, writing "<base>.pdf" under output_dir.
+
+        Args:
+            pdf_paths: PDF paths returned by process_batch (must each be
+                named after their source image's stem, as process_batch does)
+            output_dir: Directory to write the merged PDFs into
+
+        Returns:
+            List of merged PDF paths, one per base name
+        """
+        output_dir = Path(output_dir)
+        groups = defaultdict(list)
+        for pdf_path in pdf_paths:
+            stem = _strip_pipeline_suffixes(Path(pdf_path).stem)
+            match = PAGE_SUFFIX_RE.match(stem)
+            if not match:
+                logger.warning(f"Skipping {pdf_path}: filename has no trailing page number")
+                continue
+            base_name, page_number = match.groups()
+            groups[base_name].append((int(page_number), pdf_path))
+
+        merged_paths = []
+        for base_name, pages in sorted(groups.items()):
+            ordered_pdfs = [pdf_path for _, pdf_path in sorted(pages, key=lambda p: p[0])]
+            merged_path = output_dir / f"{base_name}.pdf"
+            PDFMerger.merge_pdfs(ordered_pdfs, merged_path, preserve_order=True)
+            merged_paths.append(merged_path)
+
+        return merged_paths
+
 
 def main():
     """Main entry point."""
@@ -457,6 +530,13 @@ Examples:
   # merge each subfolder's pages into its own PDF
   python 04_pdf_assemble.py --image-dir ./images --ocr-dir ./corrected_output \\
     --output-dir ./pdfs --recursive --merge-per-folder
+
+  # Flat folder holding pages from multiple documents, named
+  # "<document>_<page_number>.<ext>" (e.g. SmithLetter_001.tif,
+  # SmithLetter_002.tif, JonesReport_001.tif) -- merge each document's
+  # pages, in numeric page order, into its own PDF
+  python 04_pdf_assemble.py --image-dir ./images --ocr-dir ./corrected_output \\
+    --output-dir ./pdfs --merge-per-basename
         """
     )
 
@@ -483,12 +563,20 @@ Examples:
         help="Merge each subfolder's PDFs into one PDF per folder (requires --recursive), "
              "written under --output-dir"
     )
+    parser.add_argument(
+        "--merge-per-basename", action="store_true",
+        help="Merge PDFs sharing a base filename (e.g. SmithLetter_001, SmithLetter_002) "
+             "into one PDF per base name, in numeric page order, written under --output-dir"
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
 
     if args.merge_per_folder and not args.recursive:
         parser.error("--merge-per-folder requires --recursive")
+
+    if args.merge_per_folder and args.merge_per_basename:
+        parser.error("Cannot use both --merge-per-folder and --merge-per-basename")
 
     # Setup logging
     log_level = logging.DEBUG if args.verbose else logging.INFO
@@ -541,6 +629,10 @@ Examples:
                     pdfs, args.output_dir, root_label=args.image_dir.name
                 )
                 logger.info(f"Merged into {len(merged)} per-folder PDF(s)")
+
+            if args.merge_per_basename:
+                merged = PDFMerger.merge_per_basename(pdfs, args.output_dir)
+                logger.info(f"Merged into {len(merged)} per-basename PDF(s)")
 
     except Exception as e:
         logger.error(f"Fatal error: {e}")
