@@ -466,6 +466,105 @@ def compare_checksums(source_file: Path, dest_file: Path, log: logging.Logger) -
     return False
 
 
+# ── Source checksumming (chunked, resumable) ──────────────────────────────────
+def _as_filter_rules(filter_flags: list[str]) -> list[str]:
+    """Convert ['--exclude', 'X', ...] pairs to ordered ['--filter', '- X', ...] rules.
+
+    Per-folder checksumming needs an include rule alongside the excludes, and
+    rclone parses --include and --exclude in an indeterminate order when mixed.
+    Ordered --filter rules are first-match-wins, so the excludes reliably win."""
+    prefixes = {"--exclude": "- ", "--include": "+ ", "--filter": ""}
+    rules: list[str] = []
+    it = iter(filter_flags)
+    for flag in it:
+        if flag not in prefixes:
+            raise ValueError(f"unsupported filter flag in DEFAULT_FILTER_FLAGS/run exclusions: {flag}")
+        rules += ["--filter", prefixes[flag] + next(it)]
+    return rules
+
+
+def _glob_escape(name: str) -> str:
+    """Escape characters that rclone treats as filter wildcards."""
+    return re.sub(r"([\\*?\[\]{}])", r"\\\1", name)
+
+
+def checksum_source_chunked(
+    source: str,
+    chunks_dir: Path,
+    out_file: Path,
+    partial_file: Path,
+    exclude_flags: list[str],
+    log: logging.Logger,
+    resume_hint: str | None = None,
+) -> int:
+    """
+    Checksum the source one top-level folder at a time so an interruption only
+    costs the folder that was in progress.
+
+    The source's top-level folders are listed once and saved to a manifest in
+    chunks_dir. Each folder (plus one chunk for files directly in the source
+    root) is hashed with its own `rclone md5sum` into <n>.md5; chunks that
+    already exist are skipped on resume. When every chunk is done they are
+    concatenated into partial_file, which is renamed to out_file.
+
+    Paths in each chunk are relative to the source root, so merging is plain
+    concatenation. Returns the total number of checksum lines written.
+    """
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = chunks_dir / "manifest.json"
+    rules = _as_filter_rules(exclude_flags)
+
+    if manifest_path.exists():
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            folders: list[str] = json.load(f)["folders"]
+        log.info("Step 1: using saved listing of %d top-level folder(s).", len(folders))
+    else:
+        listing = chunks_dir / "listing.txt"
+        run(["rclone", "lsf", source, "--dirs-only"] + rules,
+            "Step 1: list top-level folders", log,
+            stdout_path=listing, resume_hint=resume_hint)
+        with open(listing, "r", newline="") as f:
+            folders = [ln.rstrip("\r\n").rstrip("/") for ln in f if ln.strip()]
+        tmp = manifest_path.with_name(manifest_path.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"folders": folders}, f, indent=2)
+        os.replace(tmp, manifest_path)
+        log.info("Step 1: found %d top-level folder(s).", len(folders))
+
+    # Chunk 0 is the files sitting directly in the source root; the rest are folders.
+    jobs: list[tuple[str, list[str]]] = [
+        ("(files in the source root)", ["--max-depth", "1"] + rules),
+    ]
+    for name in folders:
+        jobs.append((name, rules + ["--filter", f"+ /{_glob_escape(name)}/**", "--filter", "- **"]))
+
+    total = len(jobs)
+    skipped = 0
+    for i, (label, filt) in enumerate(jobs):
+        chunk = chunks_dir / f"{i:05d}.md5"
+        if chunk.exists():
+            skipped += 1
+            continue
+        part = chunk.with_name(chunk.name + ".partial")
+        print(f"  [{i + 1}/{total}] {label}", flush=True)
+        run(["rclone", "md5sum", source] + filt,
+            f"Step 1: md5sum source [{i + 1}/{total}] {label}", log,
+            stdout_path=part, resume_hint=resume_hint)
+        os.replace(part, chunk)
+    if skipped:
+        log.info("Step 1: %d of %d chunk(s) were already done and were skipped.", skipped, total)
+
+    lines = 0
+    with open(partial_file, "wb") as out:
+        for i in range(total):
+            with open(chunks_dir / f"{i:05d}.md5", "rb") as f:
+                data = f.read()
+            lines += data.count(b"\n")
+            out.write(data)
+    os.replace(partial_file, out_file)
+    return lines
+
+
 # ── Destination checksumming ──────────────────────────────────────────────────
 def recover_partial_checksums(dest_checksum_file: Path, log: logging.Logger) -> set[str]:
     """
@@ -591,6 +690,7 @@ def main() -> None:
     dry_run_flags       = ["--dry-run"] if args.dry_run else []
     checksum_file       = (args.log_dir / f"rclone_{timestamp}.md5").resolve()
     checksum_partial    = checksum_file.with_name(checksum_file.name + ".partial")
+    checksum_chunks_dir = checksum_file.with_name(checksum_file.name + ".chunks")
     dest_checksum_file  = (args.log_dir / f"rclone_{timestamp}_dest.md5").resolve()
 
     # Exclude this run's own log, checksum and progress files from copy, source
@@ -600,6 +700,7 @@ def main() -> None:
         "--exclude", log_file.name,
         "--exclude", checksum_file.name,
         "--exclude", checksum_partial.name,
+        "--exclude", checksum_chunks_dir.name + "/**",
         "--exclude", dest_checksum_file.name,
     ]
     if state is not None:
@@ -651,17 +752,15 @@ def main() -> None:
             log.info("Step 1: md5sum source — already done, reusing %s\n", checksum_file)
             print(f"\n[Step 1/3] Already done. Reusing {checksum_file}", flush=True)
         else:
-            print("\n[Step 1/3] Checksumming source — this may take a while for large trees...", flush=True)
-            run(
-                ["rclone", "md5sum", args.source] + DEFAULT_FILTER_FLAGS + run_exclusions,
-                "Step 1: md5sum source",
-                log,
-                stdout_path=checksum_partial,
-                resume_hint=resume_hint,
+            print("\n[Step 1/3] Checksumming source one top-level folder at a time "
+                  "(this may take a while for large trees)...", flush=True)
+            n_files = checksum_source_chunked(
+                args.source, checksum_chunks_dir, checksum_file, checksum_partial,
+                DEFAULT_FILTER_FLAGS + run_exclusions, log, resume_hint,
             )
-            os.replace(checksum_partial, checksum_file)
             state.mark("checksum_source")
-            log.info("Checksums saved -> %s\n", checksum_file)
+            shutil.rmtree(checksum_chunks_dir, ignore_errors=True)
+            log.info("Checksums for %d file(s) saved -> %s\n", n_files, checksum_file)
             print(f"[Step 1/3] Done. Checksums saved -> {checksum_file}", flush=True)
 
         # Step 2 — copy source to destination. `rclone copy` is idempotent, so

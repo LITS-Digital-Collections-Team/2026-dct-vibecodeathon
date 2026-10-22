@@ -58,7 +58,8 @@ Each run produces these files in the log directory (skipped in dry-run mode):
 | File | Contents |
 |---|---|
 | `rclone_YYYYMMDD_HHMMSS.log` | Full log of all steps and rclone output (a resumed run appends to the same log) |
-| `rclone_YYYYMMDD_HHMMSS.md5` | MD5 checksums of the source tree, taken before the copy. Written as `.md5.partial` and renamed only when complete, so a file with this name is always whole |
+| `rclone_YYYYMMDD_HHMMSS.md5` | MD5 checksums of the source tree, taken before the copy. Assembled from per-folder chunks and renamed into place only when complete, so a file with this name is always whole |
+| `rclone_YYYYMMDD_HHMMSS.md5.chunks/` | Temporary folder holding one checksum file per top-level source folder while step 1 runs. Deleted automatically when step 1 finishes; if you see one, a run was interrupted in step 1 |
 | `rclone_YYYYMMDD_HHMMSS_dest.md5` | MD5 checksums of the copied files at the destination, taken after the copy. Appended as it goes, so it may be partial after an interruption |
 | `rclone_<jobid>.state.json` | Progress record for this source/destination pair (which steps are done). `<jobid>` is a hash of the source and destination |
 
@@ -132,13 +133,14 @@ Progress is saved to `rclone_<jobid>.state.json` after each step. If the run is 
 
 | Interrupted during | On re-run |
 |---|---|
-| Step 1 (source md5sum) | Step 1 starts over. The incomplete `.md5.partial` is overwritten |
+| Step 1 (source md5sum) | Step 1 continues. The source is checksummed one top-level folder at a time, so only the folder that was in progress is redone; finished folders are reused |
 | Step 2 (copy) | Step 1 is skipped and its checksums reused. The copy re-runs; `rclone copy` only transfers what is still missing or different. An interrupted file restarts from the beginning |
 | Step 3a (destination checksums) | Steps 1 and 2 are skipped. Files already hashed are not re-read. A truncated last line is discarded |
 | Step 3b (comparison) | Steps 1 and 2 are skipped and the destination checksums are reused |
 
 Notes:
 
+- **Step 1 granularity.** The unit of progress is a top-level folder of the source (plus one unit for files sitting directly in the source root). A source with one enormous top-level folder gets little benefit, because that folder is a single unit. The list of folders is saved when step 1 first runs and reused on resume, so a folder added to the source afterwards is not in the snapshot. Use `--restart` to pick it up.
 - **Same flags required.** If the extra rclone flags differ from those the unfinished run was started with, the script refuses to resume, since filters change what the source snapshot contains. Re-run with the original flags, or add `--restart`.
 - **Finished runs don't resume.** Re-running a command whose last run completed starts a new run.
 - **Verification failure.** If step 3b finds missing files or hash mismatches, the copy and verify steps are marked pending. Re-running the command re-copies (only what is missing or changed) and re-verifies against the *same* source snapshot. Use `--restart` to take a new snapshot instead. Note that a file the copy skipped because its size and modification time matched cannot be repaired by re-copying; add `--checksum` on the original run if that matters.
