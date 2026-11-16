@@ -1,10 +1,17 @@
 Mnemotron Wiki
 Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
 
-=== Code License (GPL-3.0-or-later) ===
+This repository is distributed under two licenses, depending on the kind of file.
+Full license texts are in the LICENSES/ directory. Each file also carries an
+SPDX-License-Identifier line in its header.
 
-All Python scripts and supporting code in this repository are licensed under
-the GNU General Public License, version 3 or any later version.
+=== Code and Claude instructions: GPL-3.0-or-later ===
+
+Applies to: all Python scripts (scripts/*.py, wiki_export.py), shell scripts
+(setup.sh), and "Claude instruction" files (documents whose purpose is to
+instruct Claude, which function as the source code of Claude's behavior:
+WIKI_UPDATE_TASK.md, GMAIL_INGEST_TASK.md, CALENDAR_INGEST_TASK.md,
+EMAIL_ARCHIVE_TASK.md, ASANA_AND_BRIEFINGS.md).
 
 This program is free software: you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -16,23 +23,34 @@ ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
 FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
-this program. If not, see <https://www.gnu.org/licenses/>.
+this program (LICENSES/GPL-3.0-or-later.txt). If not, see
+<https://www.gnu.org/licenses/>.
 
-Full text of GPL-3.0: https://www.gnu.org/licenses/gpl-3.0.html
+=== Documentation: GFDL-1.3-or-later ===
 
-=== Documentation License (GFDL-1.3-or-later) ===
+Applies to: README.md, AUTHENTICATION.md, NOTICE.md and other documentation
+that is not an instruction to Claude.
 
-All documentation in this repository (README.md, WIKI_UPDATE_TASK.md,
-GMAIL_INGEST_TASK.md, CALENDAR_INGEST_TASK.md, and other .md files) is
-licensed under the GNU Free Documentation License, Version 1.3 or any later
+Permission is granted to copy, distribute and/or modify this documentation
+under the terms of the GNU Free Documentation License, Version 1.3 or any later
 version published by the Free Software Foundation; with no Invariant Sections,
-no Front-Cover Texts, and no Back-Cover Texts.
+no Front-Cover Texts, and no Back-Cover Texts. A copy of the license is in
+LICENSES/GFDL-1.3-or-later.txt.
 
-Full text of GFDL-1.3: https://www.gnu.org/licenses/fdl-1.3.html
+=== Wiki content ===
+
+Content you generate in wiki/ belongs to you (and to the owners of the source
+material you ingest). This project sets no license on it.
+
+=== Attribution ===
+
+Credit: Patrick R. Wallace, Hamilton College LITS. Please retain copyright
+notices and SPDX headers in redistributed copies.
 
 === AI Assistance Notice ===
 
-Portions of this software were developed with the assistance of Claude
-(Anthropic). All code has been reviewed and tested. Users are responsible for
-validating behavior in their own environments. No warranty is provided,
-express or implied.
+This software and its documentation were created with assistance from Claude
+Code (Claude Sonnet 5.5, Anthropic) and may not have been fully reviewed by a
+human. No warranty is provided, express or implied. You are responsible for
+testing behavior in your own environment and for reviewing what Claude writes
+into your wiki.

@@ -1,9 +1,38 @@
 # Mnemotron Wiki — Python dependencies
-# Install with:  pip install -r scripts/requirements.txt
+# Install with:  python3 -m pip install -r scripts/requirements.txt
 #
-# These are all well-maintained, widely-used open-source libraries.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human.
 
-pdfminer.six        # PDF text extraction
-python-docx         # .docx / Word document reading
-beautifulsoup4      # HTML parsing and text extraction
-lxml                # Fast HTML/XML parser used by BeautifulSoup
+# Text extraction
+pdfminer.six        # PDF text layer extraction
+python-docx         # .docx / .odt reading
+beautifulsoup4      # HTML parsing
+lxml                # Fast HTML/XML parser (used by BeautifulSoup)
+PyYAML              # YAML front matter (ingest_takeout.py, ingest_asana_project.py)
+
+# OCR for scanned PDFs / images — offline (needs the tesseract and poppler system packages)
+Pillow              # Image format conversion (TIFF -> JPEG, multi-page TIFF)
+pytesseract         # Python wrapper for the Tesseract OCR engine
+pdf2image           # PDF page -> image rasterizer (requires poppler)
+
+# Web fetching (fetch_urls.py, enrich_person.py)
+requests
+
+# Static HTML export
+markdown            # Markdown -> HTML (wiki_export.py)
+
+# --- Optional -------------------------------------------------------------
+# Claude is reached through scripts/llm.py.  By default it shells out to the
+# headless Claude Code CLI (`claude`), which needs no Python package and no
+# API key.  Install the Anthropic SDK only if you set MNEMOTRON_BACKEND=api
+# (or have ANTHROPIC_API_KEY set and no `claude` on PATH):
+#
+# anthropic
+#
+# Legacy .doc files: on non-macOS systems install docx2txt
+# (macOS uses the built-in `textutil`):
+#
+# docx2txt

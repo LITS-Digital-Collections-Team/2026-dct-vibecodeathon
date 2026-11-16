@@ -2,8 +2,9 @@
 # Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
 # This file is part of Mnemotron Wiki. See LICENSE for terms.
 #
-# AI ASSISTANCE NOTICE: Developed with assistance from Claude (Anthropic).
-# Reviewed and tested; verify behavior in your own environment.
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human; test it in your
+# own environment before relying on it.
 
 """
 ingest_asana_project.py — Ingest a single Asana-sourced markdown file into
@@ -47,7 +48,7 @@ Exit codes:
   1 — error (missing frontmatter, no project_gid, file not found, etc.)
 
 Usage:
-    python scripts/ingest_asana_project.py raw_ingest/asana/dc-brothertown.md
+    python scripts/ingest_asana_project.py raw_ingest/asana/example-project.md
 """
 
 import re
@@ -56,7 +57,7 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.config import TOPICS_DIR, WIKI_ROOT
+from scripts.config import TOPICS_DIR, WIKI_ROOT, local_today
 from scripts.asana_manifest import (
     get_cached_content,
     load_asana_manifest,
@@ -163,7 +164,7 @@ def render_auto_block(fm: dict, body: str) -> str:
         )
     if status and status.lower() != "none":
         lines.append(f"- Current status: {status}")
-    lines.append(f"- Last refreshed: {date.today().isoformat()}")
+    lines.append(f"- Last refreshed: {local_today().isoformat()}")
     lines.append("")
     lines.append("## Project history")
     lines.append("")
@@ -183,7 +184,7 @@ def render_new_page(fm: dict, auto_block: str) -> str:
     lines.append(f"title: {title}")
     lines.append(f"project_gid: {gid}")
     lines.append("source: Asana")
-    lines.append(f"last_updated: {date.today().isoformat()}")
+    lines.append(f"last_updated: {local_today().isoformat()}")
     lines.append("tags:")
     lines.append("  - asana")
     lines.append("  - digital-collections")
@@ -208,7 +209,7 @@ def update_frontmatter_date(page_text: str) -> str:
     Update (or insert) the `last_updated` field in an existing page's
     frontmatter.  Idempotent; leaves everything else untouched.
     """
-    today = date.today().isoformat()
+    today = local_today().isoformat()
     m = re.match(r"^(---\s*\n)(.*?)(\n---\s*\n)", page_text, re.DOTALL)
     if not m:
         return page_text
@@ -243,7 +244,7 @@ def refresh_existing_page(existing: str, auto_block: str) -> str:
     # Legacy page without markers: append instead of overwriting.
     return (
         existing.rstrip()
-        + f"\n\n## Refreshed snapshot ({date.today().isoformat()})\n\n"
+        + f"\n\n## Refreshed snapshot ({local_today().isoformat()})\n\n"
         + auto_block
         + "\n"
     )
@@ -254,14 +255,16 @@ def refresh_existing_page(existing: str, auto_block: str) -> str:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        print(
-            "Usage: python scripts/ingest_asana_project.py <filepath>",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Ingest one Asana-sourced markdown file (with project_gid front-matter) "
+                    "into wiki/topics/, refreshing the existing page if the project was "
+                    "ingested before. Makes no Claude calls.",
+    )
+    parser.add_argument("filepath", help="Path to the Asana project markdown file")
+    args = parser.parse_args()
 
-    filepath = Path(sys.argv[1]).resolve()
+    filepath = Path(args.filepath).resolve()
     if not filepath.exists():
         print(f"Error: file not found: {filepath}", file=sys.stderr)
         sys.exit(1)

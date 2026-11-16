@@ -1,9 +1,9 @@
 ---
 name: "Alex Chen"
-email: achen@hamilton.edu
-title: "Digital Collections Librarian"
-department: "LITS — Digital Collections"
-organization: "Hamilton College"
+email: achen@example.edu
+title: "Digital Strategy Lead"
+department: "Digital Strategy & Technology — Digital Collections"
+organization: "Example University"
 relationship: self
 started: "2025-07-01"
 updated: "2025-07-01"
@@ -13,10 +13,15 @@ updated: "2025-07-01"
 
 ## Profile
 
-Digital Collections Librarian at Hamilton College LITS. Member of the Digital Collections Team.
+Digital Strategy Lead at Example University's Digital Strategy & Technology
+division. Member of the Digital Collections Team.
 
-*Replace this file with your own self-page. See README.md for guidance on what to include.*
+*Replace this file with your own self-page — rename it, then fill in your
+own name, role, and organization. Claude uses this page as context for
+understanding who you are and what you work on. See README.md for guidance
+on what to include.*
 
 ## Related Topics
 
-- [LITS](../organizations/lits.md)
+- [Digital Strategy & Technology](../organizations/example-org.md)
+- [q2-planning](../topics/q2-planning.md)

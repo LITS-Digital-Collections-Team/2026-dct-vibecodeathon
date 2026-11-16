@@ -2,30 +2,66 @@
 # Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
 # This file is part of Mnemotron Wiki. See LICENSE for terms.
 #
-# AI ASSISTANCE NOTICE: Developed with assistance from Claude (Anthropic).
-# Reviewed and tested; verify behavior in your own environment.
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human; test it in your
+# own environment before relying on it.
 
 """
-extract_text.py — Extract plain text from supported document types.
+extract_text.py — Extract plain text from native (non-scanned) document types.
 
-Supports: PDF, DOCX, plain text (.txt, .md), CSV, HTML/HTM.
+Supported formats and their backends
+--------------------------------------
+  .pdf          pdfminer.six   Scanned PDFs (no text layer) are detected and
+                               flagged for re-routing to ocr.py.
+  .docx, .odt   python-docx    Paragraph text; core properties as metadata.
+  .html, .htm   BeautifulSoup  Script/style stripped; visible text only.
+  .csv          stdlib csv     Rendered as pipe-separated plain text.
+  .txt, .md     built-in       Direct UTF-8 read.
+  .doc          textutil / docx2txt   Legacy Word (macOS textutil, else docx2txt).
+  .eml          email (stdlib) Headers as metadata; plain-text body preferred.
+  .json/.jsonl  json (stdlib)  Google Chat exports rendered as transcripts;
+                               other JSON pretty-printed.
+  .xml          ElementTree    Tag-labelled outline (MODS, EAD, Dublin Core...).
+  .vcf          built-in       vCard contacts as name/email/phone/org lines.
+  images        scripts/llm    Quick vision extraction of screenshots.  Archival
+                               scans/handwriting belong in ocr.py.
 
-Usage (command line):
+Return value
+------------
+All functions return a dict with these keys:
+
+    text      str        Extracted plain text (stripped of leading/trailing
+                         whitespace).
+    type      str        File type derived from extension (e.g. "pdf").
+    source    Path       Original file path.
+    metadata  dict       Any available metadata (title, author, etc.).
+    error     str|None   Error message if extraction failed; None on success.
+    is_scan   bool       True if the file appears to be a scanned PDF with no
+                         usable text layer.  Only ever True for .pdf files.
+
+The function never raises — errors are captured in result["error"] so callers
+can decide how to handle failures (log and continue, quarantine, etc.).
+
+CLI exit codes
+--------------
+    0  Success — text printed to stdout.
+    1  Extraction error — message on stderr.
+    2  Scanned PDF detected — message on stderr; caller should use ocr.py.
+
+Usage (CLI)
+-----------
     python scripts/extract_text.py path/to/document.pdf
 
-Usage (from another script):
+Usage (import)
+--------------
     from scripts.extract_text import extract_text
-    result = extract_text(Path("path/to/document.pdf"))
-    print(result["text"])
-
-Return value is a dict:
-    {
-        "text":     str,        # extracted plain text
-        "type":     str,        # detected file type (e.g. "pdf")
-        "source":   Path,       # original file path
-        "metadata": dict,       # any available metadata (title, author, etc.)
-        "error":    str | None, # error message if extraction failed, else None
-    }
+    result = extract_text(Path("paper.pdf"))
+    if result["is_scan"]:
+        # re-route to ocr.py
+    elif result["error"]:
+        # handle failure
+    else:
+        text = result["text"]
 """
 
 import csv
@@ -38,16 +74,27 @@ from pathlib import Path
 # Per-format extractors
 # ---------------------------------------------------------------------------
 
-def _extract_pdf(filepath: Path) -> tuple[str, dict]:
-    """Extract text from a PDF using pdfminer.six."""
+def _extract_pdf(filepath: Path) -> tuple[str, dict, bool]:
+    """Extract text from a PDF that has a native text layer.
+
+    Returns (text, metadata, is_scan).
+
+    is_scan is set to True when the extracted text is suspiciously short —
+    fewer than 100 non-whitespace characters across the entire document.
+    This is a reliable heuristic for scanned PDFs where the PDF container
+    holds page images but no embedded text.  The threshold is deliberately
+    conservative: a real single-page document will almost always exceed 100
+    non-whitespace characters.
+    """
     from pdfminer.high_level import extract_text as pdfminer_extract
-    from pdfminer.pdfpage import PDFPage
     from pdfminer.pdfdocument import PDFDocument
     from pdfminer.pdfparser import PDFParser
 
     text = pdfminer_extract(str(filepath))
 
-    # Try to pull basic metadata from the PDF info dict.
+    # Attempt to read standard PDF metadata from the document info dictionary.
+    # This is best-effort: malformed or encrypted PDFs may not expose metadata,
+    # and we must not let a metadata failure abort the text extraction.
     metadata = {}
     try:
         with open(filepath, "rb") as f:
@@ -58,56 +105,65 @@ def _extract_pdf(filepath: Path) -> tuple[str, dict]:
                 for key in ("Title", "Author", "Subject", "Keywords"):
                     value = raw.get(key)
                     if value:
-                        # PDF metadata values are often bytes; decode safely.
+                        # PDF metadata values are bytes in older documents.
                         if isinstance(value, bytes):
                             value = value.decode("utf-8", errors="replace")
                         metadata[key.lower()] = value.strip()
     except Exception:
-        pass  # metadata is best-effort; don't fail extraction over it
+        pass
 
-    return text, metadata
+    # Count non-whitespace characters to detect scanned (image-only) PDFs.
+    non_ws_count = len(text.replace(" ", "").replace("\n", "").replace("\t", ""))
+    is_scan = non_ws_count < 100
+
+    return text, metadata, is_scan
 
 
 def _extract_docx(filepath: Path) -> tuple[str, dict]:
-    """Extract text from a .docx file using python-docx."""
-    from docx import Document
+    """Extract text from a .docx or .odt file using python-docx.
 
+    Paragraphs are joined with blank lines between them to preserve the
+    visual structure of the document.  Empty paragraphs (section breaks,
+    spacing) are filtered out.
+    """
+    from docx import Document
     doc = Document(str(filepath))
 
-    # Join all paragraph text; preserve blank lines between paragraphs.
-    paragraphs = [para.text for para in doc.paragraphs]
-    text = "\n\n".join(p for p in paragraphs if p.strip())
+    # Filter out truly empty paragraphs; preserve intentional blank lines
+    # between content paragraphs by using double newline as the separator.
+    text = "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
-    # Core properties (author, title) if present.
     metadata = {}
     props = doc.core_properties
     if props.title:
         metadata["title"] = props.title
     if props.author:
         metadata["author"] = props.author
-    if props.subject:
-        metadata["subject"] = props.subject
 
     return text, metadata
 
 
 def _extract_html(filepath: Path) -> tuple[str, dict]:
-    """Extract visible text from an HTML file using BeautifulSoup."""
+    """Extract visible text from an HTML file using BeautifulSoup.
+
+    Removes script, style, and head elements — their text content is not
+    meaningful for research purposes.  Uses the lxml parser for speed and
+    robust handling of malformed HTML.
+    """
     from bs4 import BeautifulSoup
 
     raw = filepath.read_text(encoding="utf-8", errors="replace")
     soup = BeautifulSoup(raw, "lxml")
 
-    # Remove script and style elements — their text is not useful.
+    # Remove non-content elements before extracting text.
     for tag in soup(["script", "style", "head"]):
         tag.decompose()
 
-    # get_text with a space separator, then tidy up blank lines.
-    text = soup.get_text(separator="\n")
-    lines = [line.strip() for line in text.splitlines()]
+    # get_text with a newline separator, then strip blank lines.
+    lines = [line.strip() for line in soup.get_text(separator="\n").splitlines()]
     text = "\n".join(line for line in lines if line)
 
-    # Try to extract <title> for metadata.
+    # The <title> element is the most reliable source of a document title.
     metadata = {}
     title_tag = soup.find("title")
     if title_tag:
@@ -117,35 +173,284 @@ def _extract_html(filepath: Path) -> tuple[str, dict]:
 
 
 def _extract_csv(filepath: Path) -> tuple[str, dict]:
-    """
-    Represent a CSV as plain text.
+    """Render a CSV file as pipe-separated plain text.
 
-    Each row becomes a line of pipe-separated values, making it readable
-    as plain text while preserving structure.  The header row (if present)
-    is preserved as-is.
-
-    Pipe-separated format is chosen because it is human-readable, survives
-    whitespace normalization, and is easy for Claude to parse into a table.
+    Pipe separation is chosen over the original delimiter because it is
+    human-readable, survives whitespace normalisation, and is easy for Claude
+    to parse into a markdown table.  The first row is treated as a header.
     """
     raw = filepath.read_text(encoding="utf-8", errors="replace")
     reader = csv.reader(StringIO(raw))
     rows = list(reader)
 
     lines = [" | ".join(cell.strip() for cell in row) for row in rows if any(row)]
-    text = "\n".join(lines)
 
     metadata = {}
     if rows:
-        metadata["columns"] = rows[0]  # first row treated as header
+        metadata["columns"] = rows[0]
         metadata["row_count"] = str(len(rows) - 1)
 
-    return text, metadata
+    return "\n".join(lines), metadata
 
 
 def _extract_plaintext(filepath: Path) -> tuple[str, dict]:
-    """Read a plain text or markdown file directly."""
-    text = filepath.read_text(encoding="utf-8", errors="replace")
+    """Read a plain text or markdown file directly.
+
+    Uses UTF-8 decoding with error replacement so malformed bytes do not
+    abort extraction.
+    """
+    return filepath.read_text(encoding="utf-8", errors="replace"), {}
+
+
+def _extract_json(filepath: Path) -> tuple[str, dict]:
+    """
+    Extract readable text from a JSON file.
+
+    Detects Google Chat exports (messages.json and group_info.json) and formats
+    them as a human-readable transcript or participant list.  Falls back to
+    pretty-printed JSON for all other structures.
+    """
+    import json
+
+    data = json.loads(filepath.read_text(encoding="utf-8", errors="replace"))
+
+    # Google Chat messages.json: {"messages": [{creator, created_date, text, ...}]}
+    if (
+        isinstance(data, dict)
+        and "messages" in data
+        and isinstance(data["messages"], list)
+        and data["messages"]
+        and isinstance(data["messages"][0], dict)
+        and "creator" in data["messages"][0]
+    ):
+        lines = []
+        for m in data["messages"]:
+            if m.get("deleted"):
+                continue
+            sender = m.get("creator", {}).get("name", "?")
+            date = m.get("created_date", "")
+            text = m.get("text", "").strip()
+            if not text:
+                atts = m.get("attached_files", [])
+                if atts:
+                    text = "[attached: " + ", ".join(
+                        a.get("original_name", "file") for a in atts
+                    ) + "]"
+            if text:
+                lines.append(f"[{date}] {sender}: {text}")
+        count = len(lines)
+        return "\n".join(lines), {"type": "google-chat-messages", "message_count": str(count)}
+
+    # Google Chat group_info.json: {"name": "...", "members": [{name, email}]}
+    if (
+        isinstance(data, dict)
+        and "members" in data
+        and isinstance(data["members"], list)
+        and data["members"]
+        and "email" in data["members"][0]
+    ):
+        space_name = data.get("name", "(DM)")
+        members = [
+            f"{m.get('name', '?')} <{m.get('email', '?')}>"
+            for m in data["members"]
+        ]
+        text = f"Conversation: {space_name}\nParticipants:\n" + "\n".join(
+            f"  - {m}" for m in members
+        )
+        return text, {"type": "google-chat-group-info", "member_count": str(len(members))}
+
+    # Generic fallback: pretty-print
+    text = json.dumps(data, indent=2, ensure_ascii=False)
     return text, {}
+
+
+def _extract_jsonl(filepath: Path) -> tuple[str, dict]:
+    """
+    Extract text from a newline-delimited JSON file.
+
+    Each non-empty line is parsed as a JSON object and pretty-printed.
+    Unparseable lines are included as-is.
+    """
+    import json
+
+    out_lines = []
+    for raw_line in filepath.read_text(encoding="utf-8", errors="replace").splitlines():
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        try:
+            obj = json.loads(raw_line)
+            out_lines.append(json.dumps(obj, ensure_ascii=False))
+        except json.JSONDecodeError:
+            out_lines.append(raw_line)
+    return "\n".join(out_lines), {"row_count": str(len(out_lines))}
+
+
+def _extract_vcf(filepath: Path) -> tuple[str, dict]:
+    """
+    Extract contacts from a vCard (.vcf) file.
+
+    Each VCARD block is parsed into a readable name/email/phone/org summary.
+    Unknown or empty fields are silently omitted.
+    """
+    raw = filepath.read_text(encoding="utf-8", errors="replace")
+    contacts = []
+    current: dict[str, list[str]] = {}
+
+    for line in raw.splitlines():
+        line = line.strip()
+        if line == "BEGIN:VCARD":
+            current = {}
+        elif line == "END:VCARD":
+            parts = []
+            for name_key in ("FN", "N"):
+                if name_key in current:
+                    parts.append(current[name_key][0])
+                    break
+            for val in current.get("EMAIL", []):
+                parts.append(f"<{val}>")
+            for val in current.get("TEL", []):
+                parts.append(f"tel:{val}")
+            for val in current.get("ORG", []):
+                parts.append(f"org:{val}")
+            if parts:
+                contacts.append("  ".join(parts))
+            current = {}
+        elif ":" in line:
+            key, _, value = line.partition(":")
+            # Strip type parameters (e.g. EMAIL;TYPE=INTERNET → EMAIL)
+            base_key = key.split(";")[0].upper()
+            current.setdefault(base_key, []).append(value.strip())
+
+    text = "\n".join(contacts) if contacts else "(empty)"
+    return text, {"contact_count": str(len(contacts))}
+
+
+def _extract_image(filepath: Path) -> tuple[str, dict]:
+    """
+    Extract text from an image file using Claude's vision API.
+
+    Builds a context-aware prompt based on filename patterns (e.g. LinkedIn
+    screenshots get sidebar-ignore instructions).  Falls back to a generic
+    OCR-style extraction for unrecognised image types.
+
+    Uses scripts/llm.py, so it works with either the headless Claude Code CLI
+    or the Anthropic API backend.  For archival scans and handwriting, use
+    ocr.py instead (Tesseract first, Claude vision as fallback).
+    """
+    try:
+        from scripts.llm import generate_from_image
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from llm import generate_from_image
+
+    name_lower = filepath.name.lower()
+    if "linkedin" in name_lower and "connections" in name_lower:
+        prompt = (
+            "This is a screenshot of a LinkedIn Connections page. "
+            "The right side of the screen contains a recurring sidebar panel "
+            "(ads, 'People You May Know', or similar LinkedIn widgets) — "
+            "ignore it entirely. "
+            "Extract only the connections list from the left/centre of the page. "
+            "For each person output one line in the format:\n"
+            "  Name | Title | Organization | Connected on: [date if visible]\n"
+            "Omit navigation bars, search boxes, buttons, and all other UI chrome."
+        )
+    elif "linkedin" in name_lower:
+        prompt = (
+            "This is a LinkedIn profile screenshot. "
+            "Extract the person's name, headline, current title, organization, "
+            "location, and any employment history or education that is visible. "
+            "Omit navigation bars, buttons, and UI chrome."
+        )
+    else:
+        prompt = (
+            "Extract all meaningful text content visible in this screenshot. "
+            "Preserve logical structure (headings, list items, table rows). "
+            "Omit navigation bars, toolbars, buttons, icons, and repeated UI "
+            "chrome unless they provide essential context. "
+            "Output plain text only — no markdown formatting, no commentary."
+        )
+
+    text = generate_from_image("", filepath, prompt).strip()
+    return text, {"extracted_via": "claude-vision"}
+
+
+def _extract_doc(filepath: Path) -> tuple[str, dict]:
+    """
+    Extract text from a legacy .doc file using macOS textutil.
+
+    textutil is a macOS built-in that handles Word 97-2004 (.doc) files
+    reliably without requiring LibreOffice or antiword.  Falls back to
+    python-docx2txt if textutil is not available (non-macOS environments).
+    """
+    import subprocess
+
+    # macOS path — textutil is always present on macOS 10.4+
+    try:
+        result = subprocess.run(
+            ["textutil", "-convert", "txt", "-stdout", str(filepath)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout, {}
+    except FileNotFoundError:
+        pass  # textutil not available; try docx2txt below
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"textutil failed: {exc.stderr.strip()}") from exc
+
+    # Non-macOS fallback: docx2txt (pip install docx2txt)
+    try:
+        import docx2txt
+        text = docx2txt.process(str(filepath))
+        return text or "", {}
+    except ImportError:
+        raise RuntimeError(
+            "Cannot extract .doc: textutil is not available and docx2txt is not installed. "
+            "On macOS this should not happen. On Linux, run: pip install docx2txt"
+        )
+
+
+def _extract_xml(filepath: Path) -> tuple[str, dict]:
+    """
+    Extract text content from an XML file using ElementTree.
+
+    Preserves element tag names as inline labels so Claude can interpret
+    field semantics (e.g. MODS, Dublin Core, EAD).  Namespace URIs are
+    stripped, leaving only the local tag name.
+    """
+    import xml.etree.ElementTree as ET
+
+    raw = filepath.read_text(encoding="utf-8", errors="replace")
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return raw, {}
+
+    def local(tag: str) -> str:
+        return tag.split("}")[-1] if "}" in tag else tag
+
+    def render(elem: ET.Element, depth: int = 0) -> list[str]:
+        indent = "  " * depth
+        tag = local(elem.tag)
+        attribs = " ".join(f'{local(k)}="{v}"' for k, v in elem.attrib.items())
+        label = f"{tag}{'[' + attribs + ']' if attribs else ''}"
+        parts = []
+        text = (elem.text or "").strip()
+        if text:
+            parts.append(f"{indent}{label}: {text}")
+        else:
+            parts.append(f"{indent}{label}:")
+        for child in elem:
+            parts.extend(render(child, depth + 1))
+        tail = (elem.tail or "").strip()
+        if tail:
+            parts.append(f"{indent}{tail}")
+        return parts
+
+    lines = render(root)
+    return "\n".join(lines), {"root_tag": local(root.tag)}
 
 
 def _extract_eml(filepath: Path) -> tuple[str, dict]:
@@ -191,47 +496,67 @@ def _extract_eml(filepath: Path) -> tuple[str, dict]:
 # Dispatcher
 # ---------------------------------------------------------------------------
 
-# Map file extensions to extractor functions.
+# Maps each supported extension to the function that handles it.
+# .odt reuses the .docx extractor because python-docx handles both formats
+# via the same OOXML-based API.
 _EXTRACTORS = {
-    ".pdf":  _extract_pdf,
+    ".pdf":  _extract_pdf,      # returns 3-tuple (text, metadata, is_scan)
     ".docx": _extract_docx,
-    ".odt":  _extract_docx,   # python-docx handles ODT via the same OOXML API
+    ".odt":  _extract_docx,
     ".html": _extract_html,
     ".htm":  _extract_html,
     ".csv":  _extract_csv,
     ".txt":  _extract_plaintext,
     ".md":   _extract_plaintext,
-    ".eml":  _extract_eml,
+    ".ics":   _extract_plaintext,   # calendar exports, read as plain text
+    ".doc":   _extract_doc,
+    ".eml":   _extract_eml,
+    ".json":  _extract_json,
+    ".jsonl": _extract_jsonl,
+    ".xml":   _extract_xml,
+    ".vcf":   _extract_vcf,
+    # Images: a quick vision-based text extraction (screenshots etc.).  For
+    # archival scans and handwriting use ocr.py instead.
+    ".png":   _extract_image,
+    ".jpg":   _extract_image,
+    ".jpeg":  _extract_image,
+    ".webp":  _extract_image,
+    ".gif":   _extract_image,
 }
 
 
 def extract_text(filepath: Path) -> dict:
-    """
-    Extract plain text from *filepath*.
+    """Extract plain text from *filepath*.
 
     Returns a result dict as described in the module docstring.
-    Never raises — errors are captured in result["error"].
+    Never raises — all errors are captured in result["error"].
     """
     filepath = Path(filepath)
     ext = filepath.suffix.lower()
-    file_type = ext.lstrip(".")
 
     result = {
-        "text": "",
-        "type": file_type,
-        "source": filepath,
+        "text":     "",
+        "type":     ext.lstrip("."),
+        "source":   filepath,
         "metadata": {},
-        "error": None,
+        "error":    None,
+        "is_scan":  False,
     }
 
     extractor = _EXTRACTORS.get(ext)
     if extractor is None:
-        result["error"] = f"Unsupported file type: {ext}"
+        result["error"] = f"Unsupported file type: {ext!r}"
         return result
 
     try:
-        text, metadata = extractor(filepath)
-        result["text"] = text.strip()
+        if ext == ".pdf":
+            # PDF extractor returns a 3-tuple; others return a 2-tuple.
+            text, metadata, is_scan = extractor(filepath)
+            result["is_scan"] = is_scan
+        else:
+            text, metadata = extractor(filepath)
+
+        result["text"]     = text.strip()
         result["metadata"] = metadata
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
@@ -250,19 +575,26 @@ if __name__ == "__main__":
 
     target = Path(sys.argv[1])
     if not target.exists():
-        print(f"Error: file not found: {target}")
+        print(f"Error: file not found: {target}", file=sys.stderr)
         sys.exit(1)
 
     res = extract_text(target)
 
     if res["error"]:
-        print(f"Extraction error: {res['error']}")
+        print(f"Extraction error: {res['error']}", file=sys.stderr)
         sys.exit(1)
 
+    if res["is_scan"]:
+        print(
+            f"[SCAN] {target.name} appears to be a scanned PDF with no text layer. "
+            "Re-route to ocr.py.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     if res["metadata"]:
-        print("--- metadata ---")
+        print("--- metadata ---", file=sys.stderr)
         for k, v in res["metadata"].items():
-            print(f"  {k}: {v}")
-        print("--- text ---")
+            print(f"  {k}: {v}", file=sys.stderr)
 
     print(res["text"])

@@ -2,8 +2,9 @@
 # Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
 # This file is part of Mnemotron Wiki. See LICENSE for terms.
 #
-# AI ASSISTANCE NOTICE: Developed with assistance from Claude (Anthropic).
-# Reviewed and tested; verify behavior in your own environment.
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human; test it in your
+# own environment before relying on it.
 
 """
 asana_manifest.py — Track which Asana projects have a corresponding wiki page.
@@ -23,7 +24,7 @@ can skip no-op refreshes.
 Schema of each entry (keyed by project_gid as a string):
 
     {
-        "project_name":       str,   # human-readable name ("DC-Brothertown")
+        "project_name":       str,   # human-readable name ("Example Project")
         "slug":               str,   # slug used in the topic-page filename
         "wiki_page":          str,   # path relative to WIKI_ROOT
         "last_ingested":      str,   # ISO date (YYYY-MM-DD)
@@ -49,6 +50,8 @@ Usage (command line — list all known projects):
     python scripts/asana_manifest.py
 """
 
+from __future__ import annotations
+
 import hashlib
 import json
 import sys
@@ -57,7 +60,7 @@ from pathlib import Path
 
 # Allow running as a script or importing as a sibling module.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.config import WIKI_ROOT
+from scripts.config import WIKI_ROOT, local_today
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -90,8 +93,8 @@ def load_asana_manifest() -> dict:
 
 def save_asana_manifest(manifest: dict) -> None:
     """Write *manifest* back to disk, pretty-printed and sorted for readability."""
-    with open(ASANA_MANIFEST_FILE, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False, sort_keys=True)
+    from scripts.locking import merge_save_json  # locked, atomic, merges concurrent entries
+    merge_save_json(ASANA_MANIFEST_FILE, manifest, sort_keys=True)
 
 
 def lookup_project(project_gid: str, manifest: dict) -> dict | None:
@@ -113,7 +116,7 @@ def mark_project_ingested(
     Caller must call save_asana_manifest() to persist.
     """
     # Store wiki_page as a path relative to WIKI_ROOT so the manifest is
-    # portable across machines (local laptop vs. Cowork VM mount).
+    # portable across machines and checkout locations.
     if wiki_page.is_absolute():
         try:
             rel = wiki_page.relative_to(WIKI_ROOT)
@@ -127,7 +130,7 @@ def mark_project_ingested(
         "project_name":      project_name,
         "slug":               slug,
         "wiki_page":          wiki_str,
-        "last_ingested":      date.today().isoformat(),
+        "last_ingested":      local_today().isoformat(),
         "last_content_hash":  content_hash(raw_content),
         "last_raw_filename":  raw_filename,
     }
