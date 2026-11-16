@@ -8,8 +8,6 @@ AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude Sonnet 5.
 
 # Mnemotron Wiki
 
-> Created with assistance from Claude Code (Claude Sonnet 5.5); may not have been fully reviewed by a human.
-
 **A personal knowledge base that builds itself from your work.**
 
 Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS  
