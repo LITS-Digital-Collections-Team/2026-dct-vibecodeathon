@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+# This file is part of Mnemotron Wiki. See LICENSE for terms.
 #
-# This program is free software: you can redistribute it and/or modify it
-# under the terms of the GNU General Public License as published by the Free
-# Software Foundation, either version 3 of the License, or (at your option)
-# any later version.  See <https://www.gnu.org/licenses/gpl-3.0.html>.
-#
-# AI ASSISTANCE NOTICE: Developed with assistance from Claude (Anthropic).
-# Reviewed and tested; verify behavior in your own environment.
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human; test it in your
+# own environment before relying on it.
 
 """
 manifest.py — Content-hash manifest for tracking processed ingest files.
@@ -17,7 +14,7 @@ Design
 Files are identified by the MD5 hash of their *contents*, not their names or
 paths.  This means:
 
-  - Renaming or moving a file within ingest/ does not cause it to be
+  - Renaming or moving a file within raw_ingest/ does not cause it to be
     reprocessed (the hash is unchanged).
   - Modifying a file (even trivially) causes it to be treated as new content
     (the hash changes).  This is intentional: changed content should be
@@ -59,7 +56,7 @@ from pathlib import Path
 # Allow the script to be run directly from the wiki root or imported as a
 # module from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.config import MANIFEST_FILE
+from scripts.config import MANIFEST_FILE, WIKI_ROOT
 
 
 # ---------------------------------------------------------------------------
@@ -85,21 +82,34 @@ def load_manifest() -> dict:
     Returns an empty dict if the manifest file does not yet exist, so callers
     do not need to check for the file's existence before using the manifest.
     """
-    if not MANIFEST_FILE.exists():
-        return {}
-    with open(MANIFEST_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    from scripts.locking import read_json
+    return read_json(MANIFEST_FILE, {})
 
 
 def save_manifest(manifest: dict) -> None:
-    """Write *manifest* back to disk, pretty-printed for human readability."""
-    with open(MANIFEST_FILE, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
+    """Write *manifest* to disk (pretty-printed) without losing concurrent updates.
+
+    The write is locked, atomic, and a *merge*: entries another process added
+    since this manifest was loaded are kept.  To remove entries, use
+    ``locking.merge_save_json(MANIFEST_FILE, {}, delete_keys=[...])``.
+    """
+    from scripts.locking import merge_save_json
+    merge_save_json(MANIFEST_FILE, manifest)
 
 
 def is_processed(filepath: Path, manifest: dict) -> bool:
     """Return True if *filepath*'s content hash is already in *manifest*."""
     return file_hash(filepath) in manifest
+
+
+def _portable(p) -> str:
+    """Store paths relative to the wiki root so manifests contain no machine-specific
+    absolute paths (safe to commit or share). Paths outside the root stay as given."""
+    p = Path(p)
+    try:
+        return p.resolve().relative_to(WIKI_ROOT.resolve()).as_posix()
+    except (ValueError, OSError):
+        return str(p)
 
 
 def mark_processed(filepath: Path, wiki_page: Path, manifest: dict) -> dict:
@@ -111,9 +121,9 @@ def mark_processed(filepath: Path, wiki_page: Path, manifest: dict) -> dict:
     key = file_hash(filepath)
     manifest[key] = {
         "filename":  filepath.name,
-        "path":      str(filepath),
+        "path":      _portable(filepath),
         "processed": datetime.now(timezone.utc).isoformat(),
-        "wiki_page": str(wiki_page),
+        "wiki_page": _portable(wiki_page),
     }
     return manifest
 

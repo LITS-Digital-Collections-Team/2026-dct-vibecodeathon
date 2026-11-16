@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+# This file is part of Mnemotron Wiki. See LICENSE for terms.
 #
-# This program is free software: you can redistribute it and/or modify it
-# under the terms of the GNU General Public License as published by the Free
-# Software Foundation, either version 3 of the License, or (at your option)
-# any later version.  See <https://www.gnu.org/licenses/gpl-3.0.html>.
-#
-# AI ASSISTANCE NOTICE: Developed with assistance from Claude (Anthropic).
-# Reviewed and tested; verify behavior in your own environment.
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human; test it in your
+# own environment before relying on it.
 
 """
 ocr.py — Offline-first OCR pipeline for scanned images and scanned PDFs.
@@ -79,8 +76,6 @@ Usage (import)
     result = ocr_file(Path("scan.tiff"), hint="auto")
 """
 
-import base64
-import os
 import re
 import sys
 import tempfile
@@ -89,7 +84,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.config import (
     JPEG_QUALITY,
-    OCR_CLAUDE_MODEL,
     PDF_OCR_DPI,
     TESSERACT_MIN_ALPHA_RATIO,
     TESSERACT_MIN_WORDS,
@@ -304,44 +298,17 @@ _CLAUDE_HANDWRITTEN_PROMPT = (
 def _claude_page(jpeg_path: Path, prompt: str) -> str:
     """Send one JPEG to Claude Vision and return the transcription.
 
-    The image is base64-encoded and sent via the Anthropic messages API.
-    Requires ANTHROPIC_API_KEY to be set in the environment.
+    Goes through scripts/llm.py, so it works with either backend: the
+    headless Claude Code CLI (no API key needed) or the Anthropic API
+    (MNEMOTRON_BACKEND=api).  The vision model is chosen by llm.py
+    (MNEMOTRON_CLI_VISION_MODEL / MNEMOTRON_API_VISION_MODEL).
     """
-    import anthropic
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY environment variable is not set. "
-            "Export it before running ocr.py with Claude Vision."
-        )
-
-    client = anthropic.Anthropic(api_key=api_key)
-    # Read and encode the JPEG as base64 — the messages API requires this for
-    # image content blocks.
-    image_data = base64.standard_b64encode(jpeg_path.read_bytes()).decode("utf-8")
-
-    msg = client.messages.create(
-        model=OCR_CLAUDE_MODEL,
-        max_tokens=4096,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": image_data,
-                        },
-                    },
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ],
-    )
-    return msg.content[0].text
+    try:
+        from scripts.llm import generate_from_image
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from llm import generate_from_image
+    return generate_from_image("", jpeg_path, prompt).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +456,14 @@ def ocr_file(filepath: Path, hint: str = "auto") -> dict:
         )
 
     return result
+
+
+def ocr_pdf(filepath: Path) -> dict:
+    """Convenience wrapper: OCR a scanned PDF with the default "auto" hint.
+
+    Used by convert_document.py when a PDF has no usable text layer.
+    """
+    return ocr_file(filepath, hint="auto")
 
 
 # ---------------------------------------------------------------------------

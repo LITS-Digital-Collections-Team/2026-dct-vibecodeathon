@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Mnemotron Wiki — synthesize_links.py
-# Originally developed by Patrick R. Wallace, Hamilton College LITS.
-# Licensed under the GNU General Public License v3 or later.
-# See <https://www.gnu.org/licenses/gpl-3.0.html>.
+# Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+# This file is part of Mnemotron Wiki. See LICENSE for terms.
+#
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human; test it in your
+# own environment before relying on it.
 
 """
 synthesize_links.py — Automatic topic linking for wiki source pages.
@@ -26,9 +28,14 @@ sync as new topic pages are added without any manual editing of this script.
 
 import argparse
 import re
+import sys
 from pathlib import Path
 
 WIKI_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(WIKI_ROOT))
+
+from scripts.locking import atomic_write_text, page_lock
+
 SOURCES_DIR = WIKI_ROOT / "wiki" / "sources"
 TOPICS_DIR  = WIKI_ROOT / "wiki" / "topics"
 
@@ -210,6 +217,7 @@ def process_file(path: Path, topic_map: list, rebuild: bool,
     Returns (modified: bool, message: str).
     """
     content = path.read_text(encoding="utf-8")
+    original = content
 
     has_section = "## Related Topics" in content
     if has_section and not rebuild:
@@ -231,7 +239,12 @@ def process_file(path: Path, topic_map: list, rebuild: bool,
                    + build_related_section(matched))
 
     if not dry_run:
-        path.write_text(new_content, encoding="utf-8")
+        # Locked read-modify-write: skip (do not clobber) if another agent
+        # changed the page since we read it; a later run will pick it up.
+        with page_lock(path):
+            if path.read_text(encoding="utf-8") != original:
+                return False, "page changed concurrently; skipped"
+            atomic_write_text(path, new_content)
 
     action = "rebuilt" if (rebuild and has_section) else "added"
     return True, f"{action} {len(matched)} topic(s): {', '.join(t['slug'] for t in matched)}"

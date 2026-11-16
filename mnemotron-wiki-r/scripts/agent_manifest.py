@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Mnemotron Wiki — scripts/agent_manifest.py
-# Originally developed by Patrick R. Wallace, Hamilton College LITS.
-# Licensed under the GNU General Public License v3 or later.
-# See <https://www.gnu.org/licenses/gpl-3.0.html>.
+# Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+# This file is part of Mnemotron Wiki. See LICENSE for terms.
+#
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human; test it in your
+# own environment before relying on it.
 
 """
 agent_manifest.py — Coordination manifest for parallel synthesis agents.
@@ -39,12 +41,15 @@ Import (from within a Claude task):
 """
 
 import argparse
+import functools
 import json
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 WIKI_ROOT      = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(WIKI_ROOT))
+from scripts.locking import file_lock, atomic_write_json  # noqa: E402
 MANIFEST_PATH  = WIKI_ROOT / "wiki" / ".agent-manifest.json"
 STALE_HOURS    = 4   # agents not released within this window are considered stale
 
@@ -69,9 +74,18 @@ class AgentManifest:
             return json.load(f)
 
     def _save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, indent=2, ensure_ascii=False)
+        atomic_write_json(self.path, self._data)
+
+    def _txn(fn):  # decorator (used below inside the class body)
+        """Run a public method as one locked transaction on a fresh copy of the
+        manifest, so concurrent claim/release/prune calls from different
+        processes cannot interleave or overwrite each other."""
+        @functools.wraps(fn)
+        def wrapper(self, *a, **kw):
+            with file_lock(self.path):
+                self._data = self._load()
+                return fn(self, *a, **kw)
+        return wrapper
 
     # -- helpers ------------------------------------------------------------
 
@@ -98,6 +112,7 @@ class AgentManifest:
 
     # -- public API ---------------------------------------------------------
 
+    @_txn
     def claim(self, agent_id: str, description: str, target_pages: list) -> None:
         """Register *agent_id* as active and owning *target_pages*.
 
@@ -123,6 +138,7 @@ class AgentManifest:
         }
         self._save()
 
+    @_txn
     def release(self, agent_id: str) -> bool:
         """Mark *agent_id* as complete and remove it from the manifest.
 
@@ -155,8 +171,10 @@ class AgentManifest:
 
     def list_active(self) -> dict:
         """Return all active (non-stale) agents."""
+        self._data = self._load()
         return self._active_agents()
 
+    @_txn
     def prune_stale(self, max_age_hours: float = STALE_HOURS) -> int:
         """Remove agents whose started timestamp is older than *max_age_hours*.
 

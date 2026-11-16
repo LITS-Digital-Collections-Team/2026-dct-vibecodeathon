@@ -1,0 +1,55 @@
+Mnemotron Wiki
+Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+
+This repository is distributed under two licenses, depending on the kind of file.
+Full license texts are in the LICENSES/ directory. Each file also carries an
+SPDX-License-Identifier line in its header.
+
+=== Code and Claude instructions: GPL-3.0-or-later ===
+
+Applies to: all Python scripts (scripts/*.py, batch_ingest.py, ia_ingest.py,
+synthesize_links.py, wiki_export.py), shell scripts (setup.sh), and "Claude
+instruction" files (documents whose purpose is to instruct Claude, e.g.
+RESEARCH_WIKI_TASK.md, which functions as the source code of Claude's behavior).
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program (LICENSES/GPL-3.0-or-later.txt). If not, see
+<https://www.gnu.org/licenses/>.
+
+=== Documentation: GFDL-1.3-or-later ===
+
+Applies to: README.md, AUTHENTICATION.md, NOTICE.md and other documentation
+that is not an instruction to Claude.
+
+Permission is granted to copy, distribute and/or modify this documentation
+under the terms of the GNU Free Documentation License, Version 1.3 or any later
+version published by the Free Software Foundation; with no Invariant Sections,
+no Front-Cover Texts, and no Back-Cover Texts. A copy of the license is in
+LICENSES/GFDL-1.3-or-later.txt.
+
+=== Wiki content ===
+
+Content you generate in wiki/ belongs to you (and to the owners of the source
+material you ingest). This project sets no license on it.
+
+=== Attribution ===
+
+Credit: Patrick R. Wallace, Hamilton College LITS. Please retain copyright
+notices and SPDX headers in redistributed copies.
+
+=== AI Assistance Notice ===
+
+This software and its documentation were created with assistance from Claude
+Code (Claude Sonnet 5.5, Anthropic) and may not have been fully reviewed by a
+human. No warranty is provided, express or implied. You are responsible for
+testing behavior in your own environment and for reviewing what Claude writes
+into your wiki.

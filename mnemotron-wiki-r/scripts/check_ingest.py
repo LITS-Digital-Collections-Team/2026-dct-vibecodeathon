@@ -1,16 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+# This file is part of Mnemotron Wiki. See LICENSE for terms.
 #
-# This program is free software: you can redistribute it and/or modify it
-# under the terms of the GNU General Public License as published by the Free
-# Software Foundation, either version 3 of the License, or (at your option)
-# any later version.  See <https://www.gnu.org/licenses/gpl-3.0.html>.
-#
-# AI ASSISTANCE NOTICE: Developed with assistance from Claude (Anthropic).
-# Reviewed and tested; verify behavior in your own environment.
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human; test it in your
+# own environment before relying on it.
 
 """
-check_ingest.py — List files in ingest/ that have not yet been processed.
+check_ingest.py — List files in raw_ingest/ that have not yet been processed.
 
 This script is the first thing Claude runs during each ingest task.  It prints
 one absolute filepath per line so Claude can iterate over the list, or so the
@@ -19,7 +16,7 @@ output can be piped to other tools.
 Files are excluded from the listing when:
   - Their extension is not in SUPPORTED_EXTENSIONS (config.py).
   - Their name starts with "." (hidden files, e.g. .DS_Store).
-  - They live under ingest/failed/ (quarantine — never auto-retried).
+  - They live under raw_ingest/failed/ (quarantine — never auto-retried).
   - Their MD5 content hash is already in .manifest.json (already processed).
 
 Usage
@@ -33,12 +30,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.config import INGEST_DIR, FAILED_INGEST_DIR, SUPPORTED_EXTENSIONS
+from scripts.config import RAW_INGEST_DIR, FAILED_INGEST_DIR, SUPPORTED_EXTENSIONS
 from scripts.manifest import load_manifest, is_processed
 
 
 def get_ingest_files(include_processed: bool = False) -> list[Path]:
-    """Return a sorted list of files in ingest/ that are ready to process.
+    """Return a sorted list of files in raw_ingest/ that are ready to process.
 
     Parameters
     ----------
@@ -47,14 +44,14 @@ def get_ingest_files(include_processed: bool = False) -> list[Path]:
         from the manifest.  When True, return all supported non-hidden files
         outside the failed/ quarantine.
     """
-    if not INGEST_DIR.exists():
+    if not RAW_INGEST_DIR.exists():
         return []
 
     # Load the manifest once for all is_processed() calls below.
     manifest = load_manifest()
     results = []
 
-    for filepath in sorted(INGEST_DIR.rglob("*")):
+    for filepath in sorted(RAW_INGEST_DIR.rglob("*")):
         # Skip directories — we only care about files.
         if not filepath.is_file():
             continue
@@ -92,7 +89,7 @@ if __name__ == "__main__":
     processed_count = len(all_files) - len(unprocessed)
 
     if summary_only:
-        print(f"Total files in ingest/:  {len(all_files)}")
+        print(f"Total files in raw_ingest/:  {len(all_files)}")
         print(f"  Already processed:     {processed_count}")
         print(f"  Awaiting processing:   {len(unprocessed)}")
         sys.exit(0)
@@ -101,7 +98,7 @@ if __name__ == "__main__":
     label = "all" if show_all else "unprocessed"
 
     if not files_to_show:
-        print(f"No {label} files found in {INGEST_DIR}")
+        print(f"No {label} files found in {RAW_INGEST_DIR}")
         sys.exit(0)
 
     for f in files_to_show:

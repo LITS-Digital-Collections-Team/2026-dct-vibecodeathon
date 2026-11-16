@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+# This file is part of Mnemotron Wiki. See LICENSE for terms.
+#
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human; test it in your
+# own environment before relying on it.
+
 """
 wiki_export.py  —  Export the research wiki to self-contained static HTML.
 
@@ -56,7 +64,7 @@ MD_EXTENSIONS = [
 # ---------------------------------------------------------------------------
 
 BUILTIN_CSS = """\
-/* Mnemotron Wiki for Research — static export  */
+/* Mnemotron Wiki — static export */
 
 :root {
     --text:      #1a1a1a;
@@ -368,9 +376,7 @@ def _build_footer(site_name: str, copyright_text: str) -> str:
     parts = []
     if copyright_text:
         parts.append(copyright_text)
-    parts.append(
-        f'Built with <a href="https://github.com/pwallace/mnemotron-wiki-r">Mnemotron-R</a>'
-    )
+    parts.append("Built with Mnemotron Wiki")
     return " &middot; ".join(parts)
 
 

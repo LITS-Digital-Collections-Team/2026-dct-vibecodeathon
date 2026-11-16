@@ -1,29 +1,36 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+# This file is part of Mnemotron Wiki. See LICENSE for terms.
 #
-# This program is free software: you can redistribute it and/or modify it
-# under the terms of the GNU General Public License as published by the Free
-# Software Foundation, either version 3 of the License, or (at your option)
-# any later version.  See <https://www.gnu.org/licenses/gpl-3.0.html>.
-#
-# AI ASSISTANCE NOTICE: Developed with assistance from Claude (Anthropic).
-# Reviewed and tested; verify behavior in your own environment.
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human; test it in your
+# own environment before relying on it.
 
 """
-config.py — Central configuration for Mnemotron Wiki for Research.
+config.py — Central configuration for Mnemotron Wiki (research tool).
 
-This is the *only* file you should need to edit when moving the project to a
-new machine or customising the directory layout.  Every other script imports
-its paths and settings from here.
+Every other script imports its paths and settings from here.  Nothing here
+needs editing for a normal install: paths are derived from this file's own
+location.
 
 Quick reference
 ---------------
-Paths:        WIKI_ROOT, INGEST_DIR, WIKI_DIR, SOURCES_DIR, TOPICS_DIR,
-              ENTITIES_DIR, MANIFEST_FILE, FAILED_INGEST_DIR
+Paths:        WIKI_ROOT, RAW_INGEST_DIR (INGEST_DIR is a backward-compatible
+              alias), FAILED_INGEST_DIR, WIKI_DIR, SOURCES_DIR, TOPICS_DIR,
+              ENTITIES_DIR, MANIFEST_FILE
 Extensions:   TEXT_EXTENSIONS, IMAGE_EXTENSIONS, SUPPORTED_EXTENSIONS
 OCR tuning:   TESSERACT_MIN_WORDS, TESSERACT_MIN_ALPHA_RATIO,
-              PDF_OCR_DPI, JPEG_QUALITY, OCR_CLAUDE_MODEL
+              PDF_OCR_DPI, JPEG_QUALITY
 Git:          GIT_COMMIT_TEMPLATE
+
+Optional per-machine settings
+-----------------------------
+scripts/llm.py reads an optional ``config.local.json`` next to the scripts/
+folder (git-ignored; never put credentials in it) for the Claude backend:
+
+    {"llm": {"backend": "cli"}}
+
+See AUTHENTICATION.md for every key.  Nothing else reads that file.
 """
 
 from pathlib import Path
@@ -40,23 +47,21 @@ WIKI_ROOT = Path(__file__).resolve().parent.parent
 # Drop zone: place new documents here for Claude to process.  Successfully
 # processed files are deleted after ingest; files that fail are moved to
 # FAILED_INGEST_DIR and never retried automatically.
-INGEST_DIR = WIKI_ROOT / "ingest"
+RAW_INGEST_DIR = WIKI_ROOT / "raw_ingest"
+INGEST_DIR = RAW_INGEST_DIR  # backward-compatible alias
 
 # Quarantine: files that failed text extraction or OCR land here.  Inspect
 # them manually to diagnose the problem before deciding what to do with them.
-FAILED_INGEST_DIR = INGEST_DIR / "failed"
+FAILED_INGEST_DIR = RAW_INGEST_DIR / "failed"
 
 # Root of all wiki content produced by Claude.
 WIKI_DIR = WIKI_ROOT / "wiki"
 
 # One markdown page per ingested document (faithful transcription / extraction).
 SOURCES_DIR = WIKI_DIR / "sources"
-
-# One markdown page per research topic (Claude-synthesised from multiple sources).
+# One markdown page per topic (Claude-synthesised from multiple sources).
 TOPICS_DIR = WIKI_DIR / "topics"
-
-# One markdown page per named entity (person, organisation, place) that appears
-# substantively in the research material.
+# One page per named entity (person, organisation, place) in the research material.
 ENTITIES_DIR = WIKI_DIR / "entities"
 
 # JSON file that tracks every processed file by content hash (MD5).
@@ -71,23 +76,13 @@ MANIFEST_FILE = WIKI_ROOT / ".manifest.json"
 # PDFs with fewer than ~100 non-whitespace characters are automatically
 # re-routed to the OCR pipeline (see extract_text.py).
 TEXT_EXTENSIONS = {
-    ".pdf",
-    ".md",
-    ".txt",
-    ".html",
-    ".htm",
-    ".csv",
-    ".docx",
-    ".odt",
+    ".pdf", ".md", ".txt", ".html", ".htm", ".csv", ".docx", ".odt", ".doc",
+    ".eml", ".json", ".jsonl", ".xml",
 }
 
 # File extensions routed through the OCR pipeline (ocr.py).
 IMAGE_EXTENSIONS = {
-    ".tif",
-    ".tiff",
-    ".jpg",
-    ".jpeg",
-    ".png",
+    ".tif", ".tiff", ".jpg", ".jpeg", ".png", ".webp", ".gif",
 }
 
 # All extensions that check_ingest.py will include in its file listing.
@@ -116,11 +111,8 @@ PDF_OCR_DPI = 300
 # before OCR.  92 gives high quality with moderate file size.
 JPEG_QUALITY = 92
 
-# Claude model used for the Vision OCR fallback and for all handwritten
-# transcription.  claude-sonnet-4-6 balances accuracy and cost well for OCR
-# tasks; upgrade to claude-opus-4-7 if accuracy on difficult material is
-# paramount.
-OCR_CLAUDE_MODEL = "claude-sonnet-4-6"
+# The Claude Vision model is chosen by scripts/llm.py (see MNEMOTRON_CLI_VISION_MODEL
+# and MNEMOTRON_API_VISION_MODEL there), not here.
 
 # ---------------------------------------------------------------------------
 # Git settings

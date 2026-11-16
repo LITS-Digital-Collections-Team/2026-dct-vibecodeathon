@@ -1,3 +1,13 @@
+<!--
+SPDX-License-Identifier: GPL-3.0-or-later
+Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+This file is part of Mnemotron Wiki. See LICENSE for terms.
+
+AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude Sonnet 5.5).
+It may not have been fully reviewed by a human; test it in your own environment
+before relying on it.
+-->
+
 # Mnemotron Wiki for Research — Ingest Task
 
 Instructions for Claude when running a research wiki ingest. Can be triggered
@@ -11,10 +21,21 @@ The ingest task runs in four stages:
 
 0. **Corpus assessment & taxonomy** — before processing new files, assess what
    they are and establish or extend the topic and entity taxonomy.
-1. **Document ingest** — process all new files in `ingest/` into `wiki/sources/`
+1. **Document ingest** — process all new files in `raw_ingest/` into `wiki/sources/`
    and synthesize or update `wiki/topics/` pages.
 2. **Index update** — regenerate `wiki/INDEX.md`.
 3. **Git commit** — commit all changes with a dated message.
+
+---
+
+## Claude access
+
+Scripts that need Claude (vision OCR fallback, handwriting transcription,
+optional summaries) go through `scripts/llm.py`, which uses headless Claude Code
+by default and the Anthropic API only if `MNEMOTRON_BACKEND=api`. If a script
+reports that no backend is available, run `python scripts/check_auth.py` and
+see `AUTHENTICATION.md`. Never write credentials into wiki pages, logs or
+committed files.
 
 ---
 
@@ -24,8 +45,8 @@ All paths are relative to the wiki root (the directory containing this file).
 
 | Purpose | Path |
 |---------|------|
-| Drop zone for new documents | `ingest/` |
-| Failed ingest quarantine | `ingest/failed/` |
+| Drop zone for new documents | `raw_ingest/` |
+| Failed ingest quarantine | `raw_ingest/failed/` |
 | Retained source transcriptions | `wiki/sources/` |
 | Synthesized topic pages | `wiki/topics/` |
 | Entity pages (people, orgs, places) | `wiki/entities/` |
@@ -162,7 +183,7 @@ risk overwriting concurrent changes by other agents.
 python scripts/check_ingest.py
 ```
 
-Prints one filepath per line for each file in `ingest/` not yet in the manifest.
+Prints one filepath per line for each file in `raw_ingest/` not yet in the manifest.
 If output is empty, skip to Stage 2.
 
 ### 1.2 Classify each file
@@ -187,7 +208,7 @@ python scripts/extract_text.py <filepath>
 ```
 
 - **Exit 0**: text printed to stdout — proceed to 1.4.
-- **Exit 1**: extraction error — move file to `ingest/failed/`, log the error, continue.
+- **Exit 1**: extraction error — move file to `raw_ingest/failed/`, log the error, continue.
 - **Exit 2**: PDF is a scan (no text layer) — re-route to 1.3b.
 
 ### 1.3b OCR pipeline (scanned images and scanned PDFs)
@@ -208,7 +229,7 @@ The script:
 Progress is printed to stderr; extracted text goes to stdout.
 
 - **Exit 0**: text printed to stdout — proceed to 1.4.
-- **Exit 1**: OCR failed — move file to `ingest/failed/`, log the error, continue.
+- **Exit 1**: OCR failed — move file to `raw_ingest/failed/`, log the error, continue.
 
 ### 1.4 Write the source page
 
@@ -614,11 +635,13 @@ For each question:
 After research, use `Edit` to insert new Key Points and source table rows into
 existing topic pages. See the **Additive editing rule** in Style notes below.
 
-### 4.4 Parallel agents for independent questions
+### 4.4 Concurrency and parallel agents
 
-When two or more open questions are independent, launch them as parallel
-background agents. Use the **agent manifest** to prevent concurrent edit
-conflicts:
+When two or more tasks are independent (open questions in Stage 4, or
+independent work units in Stage 1), launch them as parallel background agents.
+Use the **agent manifest** to prevent concurrent edit conflicts. The claim is
+atomic: it is made under a file lock, so two agents cannot both claim the same
+page.
 
 ```bash
 # Before launching: check whether target pages are already claimed
@@ -640,14 +663,24 @@ python scripts/agent_manifest.py list
 
 The manifest lives at `wiki/.agent-manifest.json`. Claims expire automatically
 after 4 hours (`STALE_HOURS`) to handle crashed agents. `check` exits non-zero
-if a conflict exists — use this as a gate before launching.
+if a conflict exists; use this as a gate before launching, and have an agent
+whose `claim` fails wait or pick other pages.
 
 Each agent should:
 - Have one clearly bounded question or subject area in its prompt
 - Target specific named source files or ranges identified by prior grep
-- Write to non-overlapping topic pages where possible
+- Write only to pages it has claimed (parallel agents never edit the same page)
 - Claim its target pages via the manifest at start; release at finish
 - Commit independently with a descriptive message
+
+**Shared files.** `.manifest.json`, `raw_ingest/ia-sources/processed.json`,
+`wiki/.agent-manifest.json`, `wiki/INDEX.md` and `wiki/OPEN-QUESTIONS.md` are
+written through `scripts/locking.py` (advisory file locks, atomic writes,
+merge-on-save), so overlapping runs do not lose entries or leave half-written
+files. Still, prefer to let one orchestrating agent update the manifest,
+regenerate the index and open-questions list, and commit; workers should not
+edit those files by hand, and must use `scripts/manifest.py`
+(`save_manifest`) rather than rewriting `.manifest.json` directly.
 
 Provide each agent with the exact grep commands needed to find relevant
 sources, the names of the topic files it should write to, and explicit
@@ -717,10 +750,3 @@ before retrying — never proceed with stale content.
 ---
 
 ---
-
-*To the extent possible under law, Patrick R. Wallace, Hamilton College LITS
-has waived all copyright and related or neighboring rights to this document.
-This work is dedicated to the public domain under CC0 1.0 Universal.
-Full text: <https://creativecommons.org/publicdomain/zero/1.0/>*
-
-*SPDX-License-Identifier: CC0-1.0*

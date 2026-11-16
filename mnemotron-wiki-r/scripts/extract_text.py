@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+# This file is part of Mnemotron Wiki. See LICENSE for terms.
 #
-# This program is free software: you can redistribute it and/or modify it
-# under the terms of the GNU General Public License as published by the Free
-# Software Foundation, either version 3 of the License, or (at your option)
-# any later version.  See <https://www.gnu.org/licenses/gpl-3.0.html>.
-#
-# AI ASSISTANCE NOTICE: Developed with assistance from Claude (Anthropic).
-# Reviewed and tested; verify behavior in your own environment.
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human; test it in your
+# own environment before relying on it.
 
 """
 extract_text.py — Extract plain text from native (non-scanned) document types.
@@ -20,6 +17,12 @@ Supported formats and their backends
   .html, .htm   BeautifulSoup  Script/style stripped; visible text only.
   .csv          stdlib csv     Rendered as pipe-separated plain text.
   .txt, .md     built-in       Direct UTF-8 read.
+  .doc          textutil / docx2txt   Legacy Word (macOS textutil, else docx2txt).
+  .eml          email (stdlib) Headers as metadata; plain-text body preferred.
+  .json/.jsonl  json (stdlib)  Pretty-printed JSON / one object per line.
+  .xml          ElementTree    Tag-labelled outline (MODS, EAD, Dublin Core...).
+  images        scripts/llm    Quick vision extraction of screenshots.  Archival
+                               scans/handwriting belong in ocr.py.
 
 Return value
 ------------
@@ -197,6 +200,210 @@ def _extract_plaintext(filepath: Path) -> tuple[str, dict]:
     return filepath.read_text(encoding="utf-8", errors="replace"), {}
 
 
+def _extract_json(filepath: Path) -> tuple[str, dict]:
+    """
+    Extract readable text from a JSON file.
+
+    Pretty-prints the parsed structure.  Raises on invalid JSON (the caller
+    records the error).
+    """
+    import json
+
+    data = json.loads(filepath.read_text(encoding="utf-8", errors="replace"))
+
+    # Generic fallback: pretty-print
+    text = json.dumps(data, indent=2, ensure_ascii=False)
+    return text, {}
+
+
+def _extract_jsonl(filepath: Path) -> tuple[str, dict]:
+    """
+    Extract text from a newline-delimited JSON file.
+
+    Each non-empty line is parsed as a JSON object and pretty-printed.
+    Unparseable lines are included as-is.
+    """
+    import json
+
+    out_lines = []
+    for raw_line in filepath.read_text(encoding="utf-8", errors="replace").splitlines():
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        try:
+            obj = json.loads(raw_line)
+            out_lines.append(json.dumps(obj, ensure_ascii=False))
+        except json.JSONDecodeError:
+            out_lines.append(raw_line)
+    return "\n".join(out_lines), {"row_count": str(len(out_lines))}
+
+
+def _extract_image(filepath: Path) -> tuple[str, dict]:
+    """
+    Extract text from an image file using Claude's vision API.
+
+    Builds a context-aware prompt based on filename patterns (e.g. LinkedIn
+    screenshots get sidebar-ignore instructions).  Falls back to a generic
+    OCR-style extraction for unrecognised image types.
+
+    Uses scripts/llm.py, so it works with either the headless Claude Code CLI
+    or the Anthropic API backend.  For archival scans and handwriting, use
+    ocr.py instead (Tesseract first, Claude vision as fallback).
+    """
+    try:
+        from scripts.llm import generate_from_image
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from llm import generate_from_image
+
+    name_lower = filepath.name.lower()
+    if "linkedin" in name_lower and "connections" in name_lower:
+        prompt = (
+            "This is a screenshot of a LinkedIn Connections page. "
+            "The right side of the screen contains a recurring sidebar panel "
+            "(ads, 'People You May Know', or similar LinkedIn widgets) — "
+            "ignore it entirely. "
+            "Extract only the connections list from the left/centre of the page. "
+            "For each person output one line in the format:\n"
+            "  Name | Title | Organization | Connected on: [date if visible]\n"
+            "Omit navigation bars, search boxes, buttons, and all other UI chrome."
+        )
+    elif "linkedin" in name_lower:
+        prompt = (
+            "This is a LinkedIn profile screenshot. "
+            "Extract the person's name, headline, current title, organization, "
+            "location, and any employment history or education that is visible. "
+            "Omit navigation bars, buttons, and UI chrome."
+        )
+    else:
+        prompt = (
+            "Extract all meaningful text content visible in this screenshot. "
+            "Preserve logical structure (headings, list items, table rows). "
+            "Omit navigation bars, toolbars, buttons, icons, and repeated UI "
+            "chrome unless they provide essential context. "
+            "Output plain text only — no markdown formatting, no commentary."
+        )
+
+    text = generate_from_image("", filepath, prompt).strip()
+    return text, {"extracted_via": "claude-vision"}
+
+
+def _extract_doc(filepath: Path) -> tuple[str, dict]:
+    """
+    Extract text from a legacy .doc file using macOS textutil.
+
+    textutil is a macOS built-in that handles Word 97-2004 (.doc) files
+    reliably without requiring LibreOffice or antiword.  Falls back to
+    python-docx2txt if textutil is not available (non-macOS environments).
+    """
+    import subprocess
+
+    # macOS path — textutil is always present on macOS 10.4+
+    try:
+        result = subprocess.run(
+            ["textutil", "-convert", "txt", "-stdout", str(filepath)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout, {}
+    except FileNotFoundError:
+        pass  # textutil not available; try docx2txt below
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"textutil failed: {exc.stderr.strip()}") from exc
+
+    # Non-macOS fallback: docx2txt (pip install docx2txt)
+    try:
+        import docx2txt
+        text = docx2txt.process(str(filepath))
+        return text or "", {}
+    except ImportError:
+        raise RuntimeError(
+            "Cannot extract .doc: textutil is not available and docx2txt is not installed. "
+            "On macOS this should not happen. On Linux, run: pip install docx2txt"
+        )
+
+
+def _extract_xml(filepath: Path) -> tuple[str, dict]:
+    """
+    Extract text content from an XML file using ElementTree.
+
+    Preserves element tag names as inline labels so Claude can interpret
+    field semantics (e.g. MODS, Dublin Core, EAD).  Namespace URIs are
+    stripped, leaving only the local tag name.
+    """
+    import xml.etree.ElementTree as ET
+
+    raw = filepath.read_text(encoding="utf-8", errors="replace")
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return raw, {}
+
+    def local(tag: str) -> str:
+        return tag.split("}")[-1] if "}" in tag else tag
+
+    def render(elem: ET.Element, depth: int = 0) -> list[str]:
+        indent = "  " * depth
+        tag = local(elem.tag)
+        attribs = " ".join(f'{local(k)}="{v}"' for k, v in elem.attrib.items())
+        label = f"{tag}{'[' + attribs + ']' if attribs else ''}"
+        parts = []
+        text = (elem.text or "").strip()
+        if text:
+            parts.append(f"{indent}{label}: {text}")
+        else:
+            parts.append(f"{indent}{label}:")
+        for child in elem:
+            parts.extend(render(child, depth + 1))
+        tail = (elem.tail or "").strip()
+        if tail:
+            parts.append(f"{indent}{tail}")
+        return parts
+
+    lines = render(root)
+    return "\n".join(lines), {"root_tag": local(root.tag)}
+
+
+def _extract_eml(filepath: Path) -> tuple[str, dict]:
+    """Extract text and headers from an .eml email file."""
+    import email
+    from email import policy as email_policy
+
+    msg = email.message_from_bytes(
+        filepath.read_bytes(), policy=email_policy.default
+    )
+
+    metadata = {}
+    for header in ("subject", "from", "to", "date"):
+        value = msg.get(header)
+        if value:
+            metadata[header] = str(value).strip()
+
+    # Collect text parts; prefer text/plain over text/html because plain
+    # text is more compact and avoids re-parsing HTML artefacts.  Only
+    # fall back to HTML if the message has no plain-text part at all
+    # (common in heavily formatted marketing emails, rare in work mail).
+    plain_parts: list[str] = []
+    html_parts: list[str] = []
+    for part in msg.walk():
+        if str(part.get("Content-Disposition", "")).lower().startswith("attachment"):
+            continue
+        ct = part.get_content_type()
+        if ct == "text/plain":
+            plain_parts.append(part.get_content())
+        elif ct == "text/html":
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(part.get_content(), "lxml")
+            for tag in soup(["script", "style"]):
+                tag.decompose()
+            html_parts.append(soup.get_text(separator="\n"))
+
+    parts = plain_parts if plain_parts else html_parts
+    text = "\n\n".join(p.strip() for p in parts if p.strip())
+    return text, metadata
+
+
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
@@ -213,6 +420,18 @@ _EXTRACTORS = {
     ".csv":  _extract_csv,
     ".txt":  _extract_plaintext,
     ".md":   _extract_plaintext,
+    ".doc":   _extract_doc,
+    ".eml":   _extract_eml,
+    ".json":  _extract_json,
+    ".jsonl": _extract_jsonl,
+    ".xml":   _extract_xml,
+    # Images: a quick vision-based text extraction (screenshots etc.).  For
+    # archival scans and handwriting use ocr.py instead.
+    ".png":   _extract_image,
+    ".jpg":   _extract_image,
+    ".jpeg":  _extract_image,
+    ".webp":  _extract_image,
+    ".gif":   _extract_image,
 }
 
 

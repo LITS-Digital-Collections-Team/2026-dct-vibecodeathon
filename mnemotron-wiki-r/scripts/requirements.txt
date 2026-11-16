@@ -1,5 +1,10 @@
-# Mnemotron Wiki for Research — Python dependencies
-# Install with:  pip install -r scripts/requirements.txt
+# Mnemotron Wiki — Python dependencies
+# Install with:  python3 -m pip install -r scripts/requirements.txt
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human.
 
 # Text extraction
 pdfminer.six        # PDF text layer extraction
@@ -7,13 +12,27 @@ python-docx         # .docx / .odt reading
 beautifulsoup4      # HTML parsing
 lxml                # Fast HTML/XML parser (used by BeautifulSoup)
 
-# OCR — offline
-Pillow              # Image format conversion (TIFF → JPEG, multi-page TIFF)
-pytesseract         # Python wrapper for Tesseract OCR engine
-pdf2image           # PDF page → image rasterizer (requires poppler system package)
-
-# OCR — Claude Vision fallback
-anthropic           # Anthropic SDK for Claude Vision API calls
+# OCR — offline (needs the tesseract and poppler system packages)
+Pillow              # Image format conversion (TIFF -> JPEG, multi-page TIFF)
+pytesseract         # Python wrapper for the Tesseract OCR engine
+pdf2image           # PDF page -> image rasterizer (requires poppler)
 
 # Static HTML export
-markdown            # Markdown → HTML (wiki_export.py)
+markdown            # Markdown -> HTML (wiki_export.py)
+
+# --- Optional -------------------------------------------------------------
+# Claude is reached through scripts/llm.py.  By default it shells out to the
+# headless Claude Code CLI (`claude`), which needs no Python package and no
+# API key.  The Anthropic SDK is ONLY needed for MNEMOTRON_BACKEND=api
+# (see AUTHENTICATION.md):
+#
+# anthropic
+#
+# Legacy .doc files: on non-macOS systems install docx2txt
+# (macOS uses the built-in `textutil`):
+#
+# docx2txt
+#
+# Internet Archive ingest (ia_ingest.py) uses the `ia` command-line tool:
+#
+# internetarchive

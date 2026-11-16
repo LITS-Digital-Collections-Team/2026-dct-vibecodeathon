@@ -7,16 +7,26 @@ under the terms of the GNU Free Documentation License, Version 1.3 or
 any later version published by the Free Software Foundation; with no
 Invariant Sections, no Front-Cover Texts, and no Back-Cover Texts.
 Full license text: https://www.gnu.org/licenses/fdl.html
+
+AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude Sonnet 5.5). It may not have been fully reviewed by a human; test it in your own environment before relying on it.
 -->
 
 # Mnemotron Wiki for Research
 
+> Created with assistance from Claude Code (Claude Sonnet 5.5); may not have been fully reviewed by a human.
+> Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS. Code and Claude instructions: GPL-3.0-or-later. Documentation: GFDL-1.3-or-later. See [License](#12-license).
+
 A Claude-powered knowledge base for managing a research corpus. Drop source
-documents into `ingest/` and Claude processes them into a structured,
+documents into `raw_ingest/` and Claude processes them into a structured,
 cross-referenced markdown wiki — extracting text from native PDFs and web
 pages, and transcribing scanned documents through an offline-first OCR
 pipeline. All source content is retained in markdown; raw scan files and
 PDFs are discarded after ingest.
+
+See [1.1 Claude backends](#11-claude-backends-headless-claude-code-or-the-api),
+[1.2 Concurrency and parallel agents](#12-concurrency-and-parallel-agents),
+[1.3 Relationship to the sibling tool](#13-relationship-to-the-sibling-tool) and
+[`AUTHENTICATION.md`](AUTHENTICATION.md).
 
 ---
 
@@ -59,12 +69,102 @@ synthesize findings across multiple sources, with inline citations back to the
 source pages.
 
 **Idempotent manifest.** A content-hash manifest (`.manifest.json`) ensures no
-file is ever processed twice, even if renamed or moved within `ingest/`.
+file is ever processed twice, even if renamed or moved within `raw_ingest/`.
 
 **Internet Archive integration.** `ia_ingest.py` fetches items directly from
 Internet Archive by identifier, preferring IA's pre-built Tesseract OCR text
 (`*_djvu.txt`) and falling back to a local OCR pass on the original PDF when
 the pre-built text is absent or too noisy.
+
+---
+
+### 1.1 Claude backends: headless Claude Code or the API
+
+Every script that calls Claude goes through `scripts/llm.py`, which has two
+interchangeable backends:
+
+| Backend | How it works | Credentials |
+|---------|--------------|-------------|
+| `cli` (default) | Runs the headless Claude Code CLI (`claude -p ...`) | Whatever login the CLI already has (subscription, Team/Enterprise SSO, or a long-lived token from `claude setup-token`). No API key or SDK needed. |
+| `api` | Calls the Anthropic Messages API through the `anthropic` SDK | An API key via `ANTHROPIC_API_KEY`, `MNEMOTRON_API_KEY_FILE`, `MNEMOTRON_API_KEY_COMMAND`, or another credential source the SDK supports. |
+
+Choose with `MNEMOTRON_BACKEND=cli|api|auto` (or `{"llm": {"backend": "..."}}` in
+an untracked `config.local.json`). With `auto` (the default) the CLI is used
+whenever `claude` is on your `PATH`; the API is used only if you ask for it or
+`claude` is absent. An `ANTHROPIC_API_KEY` in your environment does not switch
+you to the API while Claude Code is installed. Diagnose with
+`python scripts/check_auth.py` (add `--call` to send one tiny test request).
+Full details, unattended-run advice and every setting are in
+[`AUTHENTICATION.md`](AUTHENTICATION.md).
+
+The task document (`RESEARCH_WIKI_TASK.md`) is a set of instructions for an
+*agent*. You can run it interactively (open Claude Code in the wiki root and say
+"run the research wiki ingest task") or with `scripts/run_task.py`, which works
+on either backend (below). Unattended runs should use a dedicated, limited
+account or token, never shared credentials.
+
+### Running the task documents on either backend
+
+The `*_TASK.md` files are instructions for an agent that can read and write files and run
+the helper scripts. `scripts/run_task.py` provides that agent on **either** backend, so no
+functionality depends on how you authenticate:
+
+```bash
+python scripts/run_task.py RESEARCH_WIKI_TASK.md --dry-run            # show the plan; no Claude call (`--dry-run` never calls Claude in any script)
+python scripts/run_task.py RESEARCH_WIKI_TASK.md --prompt "optional extra instructions"
+python scripts/run_task.py RESEARCH_WIKI_TASK.md --backend api         # force the API agent for this run
+```
+
+* **`cli` backend:** headless Claude Code does the agent work with an explicit permission
+  allowlist (file edits, the wiki's own scripts, read-only git plus add/commit). Claude Code's
+  subagents and any MCP connectors configured in Claude Code are available (allow them with
+  `--allow-tool "mcp__<server>__*"`).
+* **`api` backend:** a built-in sandboxed tool-use loop over the Messages API (file tools inside
+  the wiki root, allowlisted commands without a shell, `run_subtask` workers with exclusive page
+  ownership, optional remote MCP servers via `--mcp NAME=https://URL`). Needs only an API key.
+* One run at a time per wiki (a lock refuses overlaps unless `--force`).
+* Both modes are bounded by your plan or API budget; use `--max-budget-usd` (cli) or `--max-turns`
+  (api) to cap a run. Content you process is sent to Anthropic.
+
+
+### 1.2 Concurrency and parallel agents
+
+Large corpora are best processed by several Claude agents in parallel. Two
+mechanisms keep them from stepping on each other:
+
+* **Page ownership.** `python scripts/agent_manifest.py check|claim|release|prune|list`
+  records which agent owns which wiki pages (an atomic claim under a file
+  lock, kept in `wiki/.agent-manifest.json`). Before dispatching parallel
+  agents run `check` on the pages they will touch; each agent `claim`s its
+  pages, writes only those, then `release`s them. `prune` clears claims left by
+  crashed agents. Parallel agents never edit the same page.
+* **Safe shared files.** `scripts/locking.py` provides advisory file locks,
+  atomic writes and locked merge-on-save. The manifests and logs
+  (`.manifest.json`, `raw_ingest/ia-sources/processed.json`, the agent manifest)
+  and generated pages (`INDEX.md`, `OPEN-QUESTIONS.md`, source pages written by
+  `batch_ingest.py` / `ia_ingest.py`, related-topic links) are written through
+  it, so overlapping runs do not lose entries or leave half-written files.
+  Shared manifests and logs are still best updated by one orchestrating agent.
+  Locking leaves small `*.lock` sidecar files next to what it protects; they
+  are git-ignored and safe to delete when no job is running.
+
+### 1.3 Relationship to the sibling tool
+
+Mnemotron Wiki for Research has a sibling, **Mnemotron Wiki** (the
+`mnemotron-wiki` package), which is a personal and work-reference wiki:
+people, organizations, topics, converted documents, daily entries and an
+optional email/calendar/task-manager archive. This tool is for something
+different: normalizing highly heterogeneous research corpora (primary and
+secondary sources, scans, handwriting) into faithful source transcriptions plus
+synthesized topic and entity pages (`wiki/sources`, `wiki/topics`,
+`wiki/entities`). The two are maintained separately but share the same
+foundations: `scripts/llm.py`, `scripts/locking.py`, `scripts/agent_manifest.py`,
+`scripts/manifest.py`, `scripts/check_auth.py`, the `raw_ingest/` drop-folder
+convention, and the same license scheme. They intentionally differ in their
+wiki layout, task document, and extras: this tool adds the OCR pipeline,
+Internet Archive ingest, the batch runner, link synthesis and quality reports;
+the sibling adds document conversion, person enrichment, daily/to-do generation
+and optional connector-based ingest.
 
 ---
 
@@ -77,7 +177,7 @@ the pre-built text is absent or too noisy.
 | Tesseract | 4.0 | Offline print OCR |
 | poppler (`pdftoppm`) | Any recent | PDF-to-image rasterization for scanned PDFs |
 | `internetarchive` (pip) | 5.0 | `ia_ingest.py` — fetching from Internet Archive (optional) |
-| `ANTHROPIC_API_KEY` | — | Claude Vision OCR fallback; handwriting transcription |
+| Claude Code CLI (default) **or** `anthropic` (pip) + an API key | — | Claude access for vision OCR fallback, handwriting, and the task document itself (see [1.1](#11-claude-backends-headless-claude-code-or-the-api) and [`AUTHENTICATION.md`](AUTHENTICATION.md)) |
 
 **macOS installation (Homebrew):**
 
@@ -100,8 +200,8 @@ ia configure          # enter your archive.org credentials
 
 Tesseract and poppler are optional in the sense that the tool will still run
 without them — but scanned PDFs and image files will immediately fall back to
-Claude Vision for every page, which costs API tokens. See
-[Troubleshooting](#10-troubleshooting) for advice on verifying your
+Claude Vision for every page, which uses Claude tokens. See
+[Troubleshooting](#11-troubleshooting) for advice on verifying your
 installation.
 
 ---
@@ -116,7 +216,7 @@ bash setup.sh
 
 `setup.sh` will:
 
-1. Create the `ingest/`, `ingest/failed/`, and `wiki/` subdirectories if
+1. Create the `raw_ingest/`, `raw_raw_ingest/failed/`, and `wiki/` subdirectories if
    absent.
 2. Run `git init` if the directory is not already a git repository.
 3. Install all Python packages from `scripts/requirements.txt`.
@@ -124,22 +224,31 @@ bash setup.sh
    missing.
 5. Create an empty `.manifest.json` if one does not exist.
 
-After setup, set your Anthropic API key in your shell environment (add to
-`~/.zprofile` or `~/.bash_profile` to make it persistent):
+After setup, make Claude available through **one** of these (see
+[1.1](#11-claude-backends-headless-claude-code-or-the-api) and
+[`AUTHENTICATION.md`](AUTHENTICATION.md)):
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
+# A. Headless Claude Code (default): install Claude Code and log in once (`claude`).
+#    For unattended machines: claude setup-token, then expose the token as
+#    CLAUDE_CODE_OAUTH_TOKEN in the environment of the job.
+
+# B. Anthropic API (optional): pip install anthropic, provide a key through your
+#    environment or secret manager (never a file you commit), then:
+export MNEMOTRON_BACKEND=api
 ```
+
+Check the result with `python scripts/check_auth.py`.
 
 ---
 
 ## 4. Day-to-day workflow
 
-### 4.1 Dropping files into `ingest/`
+### 4.1 Dropping files into `raw_ingest/`
 
-Copy or move source documents into the `ingest/` folder. Any supported file
+Copy or move source documents into the `raw_ingest/` folder. Any supported file
 format is accepted (see [Section 5](#5-supported-formats)). Subdirectories
-within `ingest/` are scanned recursively, so you can organize incoming
+within `raw_ingest/` are scanned recursively, so you can organize incoming
 material into subfolders if convenient.
 
 **Naming conventions for OCR hints:**
@@ -157,9 +266,9 @@ these suffixes before the file extension:
 Examples:
 
 ```
-ingest/field-notes-2026-03-15-hw.tiff   ← handwritten
-ingest/census-page-1870.tif             ← print (Tesseract first)
-ingest/interview-transcript.pdf         ← native PDF or scanned print
+raw_ingest/field-notes-2026-03-15-hw.tiff   ← handwritten
+raw_ingest/census-page-1870.tif             ← print (Tesseract first)
+raw_ingest/interview-transcript.pdf         ← native PDF or scanned print
 ```
 
 ### 4.2 Running the ingest task
@@ -168,7 +277,7 @@ Open a Claude Code session in the wiki root directory and say any of:
 
 - `run the research wiki ingest task`
 - `ingest new documents`
-- `process the ingest folder`
+- `process the raw_ingest folder`
 
 Claude reads `RESEARCH_WIKI_TASK.md`, which contains the full pipeline
 instructions. The task runs in **four stages**:
@@ -195,12 +304,12 @@ For large batches of pre-processed text files, `batch_ingest.py` automates
 source page creation without requiring a full Claude session:
 
 ```bash
-python batch_ingest.py              # process all pending files in ingest/
-python batch_ingest.py --dry-run    # plan without writing any files
+python batch_ingest.py              # process all pending files in raw_ingest/
+python batch_ingest.py --dry-run    # plan without writing any files (no OCR or Claude calls; images are listed, not read)
 python batch_ingest.py --limit 50   # process at most 50 files
 ```
 
-`batch_ingest.py` reads `ingest/` (via the manifest), extracts text from each
+`batch_ingest.py` reads `raw_ingest/` (via the manifest), extracts text from each
 file using `scripts/extract_text.py`, generates a source page, saves it to
 `wiki/sources/`, and updates `.manifest.json` after every file (so a partial
 run resumes safely). It does **not** perform topic synthesis — run the full
@@ -227,7 +336,7 @@ ia configure          # enter archive.org credentials
 
 **Setup:**
 
-Create `ingest/ia-sources/search.csv` with one IA identifier per row (the
+Create `raw_ingest/ia-sources/search.csv` with one IA identifier per row (the
 first column). A header row of `identifier` is detected and skipped
 automatically. Run an IA search and download the CSV, or build it manually:
 
@@ -250,7 +359,7 @@ python ia_ingest.py --csv path/to.csv   # use an alternate CSV file
 
 **How it works:**
 
-For each identifier not already in `ingest/ia-sources/processed.json`:
+For each identifier not already in `raw_ingest/ia-sources/processed.json`:
 
 1. Fetches IA metadata and confirms `mediatype == "texts"`.
 2. Downloads `*_djvu.txt` — IA's pre-built Tesseract OCR (fast, ~100–400 KB).
@@ -260,12 +369,12 @@ For each identifier not already in `ingest/ia-sources/processed.json`:
    (may be 50–100 MB) and runs the local OCR pipeline — pdfminer for PDFs
    with a text layer, or Tesseract → Claude Vision for scanned PDFs.
 5. Writes a source page to `wiki/sources/` and records the identifier in
-   `ingest/ia-sources/processed.json`.
+   `raw_ingest/ia-sources/processed.json`.
 
 Progress is printed one line per identifier. `processed.json` is saved after
 each successful item, so the run can be interrupted and resumed safely.
 
-**Tracking:** IA items are tracked in `ingest/ia-sources/processed.json`
+**Tracking:** IA items are tracked in `raw_ingest/ia-sources/processed.json`
 (keyed by identifier), separate from `.manifest.json` (which is keyed by
 content hash of local files). Both logs prevent reprocessing items already
 in `wiki/sources/`.
@@ -318,9 +427,9 @@ page created.
 ### 4.8 Handling failed files
 
 Files that cannot be processed (extraction error, OCR failure) are moved to
-`ingest/failed/` and are never automatically retried. Inspect them to
+`raw_ingest/failed/` and are never automatically retried. Inspect them to
 understand what went wrong (poor scan quality, corrupted file, unsupported
-content type), then either fix the file and move it back to `ingest/`, or
+content type), then either fix the file and move it back to `raw_ingest/`, or
 discard it.
 
 ---
@@ -336,6 +445,10 @@ discard it.
 | `.txt`, `.md` | Direct read | UTF-8, with replacement for undecodable bytes |
 | `.csv` | stdlib csv | Rendered as pipe-separated plain text for readability |
 | `.docx`, `.odt` | python-docx | Paragraph text extracted; core properties (title, author) captured as metadata |
+| `.doc` | `textutil` (macOS) or `docx2txt` | Legacy Word |
+| `.eml` | stdlib `email` | Headers as metadata; plain-text body preferred |
+| `.json`, `.jsonl` | stdlib `json` | Pretty-printed / one object per line |
+| `.xml` | ElementTree | Tag-labelled outline; suited to MODS, Dublin Core, EAD |
 
 ### Image and scanned formats (OCR pipeline)
 
@@ -343,7 +456,7 @@ discard it.
 |-----------|-------|
 | `.tif`, `.tiff` | Multi-page TIFFs are split into per-page JPEGs automatically |
 | `.jpg`, `.jpeg` | Passed directly to OCR |
-| `.png` | Converted to JPEG before OCR |
+| `.png`, `.webp`, `.gif` | Converted to JPEG before OCR |
 
 ---
 
@@ -489,15 +602,17 @@ type), and an ingested-documents log from `.manifest.json`.
 ## 8. Configuration reference
 
 All settings live in `scripts/config.py`. Edit that file to change paths or
-tune OCR behavior; all other scripts import from it.
+tune OCR behavior; all other scripts import from it. The Claude backend is
+configured separately (environment variables or an optional `config.local.json`
+`"llm"` object; see [`AUTHENTICATION.md`](AUTHENTICATION.md)).
 
 ### Paths
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WIKI_ROOT` | *(derived)* | Absolute path to the wiki root; derived from `config.py`'s location so it works on any machine |
-| `INGEST_DIR` | `ingest/` | Drop zone for new documents |
-| `FAILED_INGEST_DIR` | `ingest/failed/` | Quarantine for files that fail processing |
+| `RAW_INGEST_DIR` | `raw_ingest/` | Drop zone for new documents (`INGEST_DIR` is a backward-compatible alias) |
+| `FAILED_INGEST_DIR` | `raw_ingest/failed/` | Quarantine for files that fail processing |
 | `WIKI_DIR` | `wiki/` | All wiki content |
 | `SOURCES_DIR` | `wiki/sources/` | Retained source transcriptions |
 | `TOPICS_DIR` | `wiki/topics/` | Synthesized topic pages |
@@ -509,7 +624,7 @@ tune OCR behavior; all other scripts import from it.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TEXT_EXTENSIONS` | `{.pdf, .md, .txt, ...}` | Extensions routed to text extraction |
-| `IMAGE_EXTENSIONS` | `{.tif, .tiff, .jpg, .jpeg, .png}` | Extensions routed to OCR |
+| `IMAGE_EXTENSIONS` | `{.tif, .tiff, .jpg, .jpeg, .png, .webp, .gif}` | Extensions routed to OCR |
 | `SUPPORTED_EXTENSIONS` | Union of above | All extensions `check_ingest.py` will list |
 
 ### OCR settings
@@ -520,7 +635,6 @@ tune OCR behavior; all other scripts import from it.
 | `TESSERACT_MIN_ALPHA_RATIO` | `0.45` | Minimum fraction of non-whitespace chars that must be alphabetic. Raise for cleaner scans. |
 | `PDF_OCR_DPI` | `300` | DPI for rasterizing PDF pages. 300 is standard; raise to 400–600 for very fine print. |
 | `JPEG_QUALITY` | `92` | JPEG compression quality for converted images (1–95). |
-| `OCR_CLAUDE_MODEL` | `claude-sonnet-4-6` | Claude model used for Vision OCR fallback and handwriting. |
 
 ---
 
@@ -530,7 +644,7 @@ All scripts can be run from the wiki root. They accept a `--help` flag.
 
 ### `batch_ingest.py`
 
-Automated bulk ingest of all pending files in `ingest/`. Creates source pages,
+Automated bulk ingest of all pending files in `raw_ingest/`. Creates source pages,
 updates `.manifest.json`, but does **not** run topic synthesis (do that via the
 full Claude ingest task).
 
@@ -560,8 +674,8 @@ python ia_ingest.py --verbose            # per-step progress to stderr
 python ia_ingest.py --csv path/to.csv   # use an alternate identifier list
 ```
 
-Reads identifiers from `ingest/ia-sources/search.csv` by default. Tracks
-processed items in `ingest/ia-sources/processed.json` (separate from
+Reads identifiers from `raw_ingest/ia-sources/search.csv` by default. Tracks
+processed items in `raw_ingest/ia-sources/processed.json` (separate from
 `.manifest.json`, because IA items have no local file to hash).
 
 Quality thresholds for djvu.txt acceptance (configurable at the top of the
@@ -621,7 +735,7 @@ python scripts/manifest.py        # print all processed files
 
 ### `scripts/check_ingest.py`
 
-Lists files in `ingest/` that have not yet been processed.
+Lists files in `raw_ingest/` that have not yet been processed.
 
 ```bash
 python scripts/check_ingest.py            # unprocessed files only
@@ -685,6 +799,20 @@ result = ocr_file(Path("scan.tiff"), hint="auto")
 | `"print"` | Thumbnail pre-flight, then per-page Tesseract with Claude fallback |
 | `"handwritten"` | Skip Tesseract; Claude Vision for all pages |
 
+### Other scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/llm.py` | Claude backend switch (headless CLI or API); `python scripts/llm.py` self-test. Every Claude call in this tool goes through it. |
+| `scripts/check_auth.py` | Diagnose the Claude backend without spending anything (`--call` sends one tiny request); see `AUTHENTICATION.md` |
+| `scripts/locking.py` | File locks, atomic writes, locked merge-on-save; used by every script that writes a manifest, log or generated page |
+| `scripts/agent_manifest.py` | Page-ownership claims for parallel agents: `check`, `claim`, `release`, `prune`, `list` |
+| `scripts/run_task.py` | Run a task document on either backend (headless Claude Code or the built-in API agent loop) |
+| `scripts/build_index.py` | Regenerate `wiki/INDEX.md` (topics, sources, entities, ingested-documents log); `--use-api` / `--use-llm` asks Claude for missing topic summaries |
+| `scripts/quality_report.py` | OCR quality summary across `wiki/sources/` (by method, type, review flags); `--flagged`, `--method`, `--no-ocr` |
+| `scripts/open_questions.py` | Regenerate `wiki/OPEN-QUESTIONS.md` from the `## Open Questions` sections of all topic pages |
+| `wiki_export.py` | Static HTML export (see Section 10) |
+
 ---
 
 ## 10. Exporting to HTML
@@ -706,7 +834,7 @@ python wiki_export.py -o /path/to/output                 # custom output dir
 Source pages are excluded by default — large corpora can contain thousands of
 them. Use `--all` or `--sources` to include them.
 
-The footer of every page attributes the export to Mnemotron-R. Use
+The footer of every page notes that it was built with Mnemotron Wiki. Use
 `--copyright` to prepend your own copyright notice. For full visual
 customization, supply a replacement stylesheet with `--css`.
 
@@ -743,21 +871,22 @@ sudo apt install poppler-utils # Debian/Ubuntu
 Without poppler, `pdf2image` cannot rasterize PDFs and all scanned PDF
 processing will fail at the image-preparation step.
 
-### `ANTHROPIC_API_KEY is not set`
+### `No Claude backend available` / authentication errors
 
-Set the environment variable before running Claude:
+`scripts/llm.py` found neither the `claude` CLI nor an API credential. Run
+`python scripts/check_auth.py` for a diagnosis. Either install Claude Code and
+log in (`MNEMOTRON_BACKEND=cli`, the default), or `pip install anthropic`,
+provide a key as described in [`AUTHENTICATION.md`](AUTHENTICATION.md), and set
+`MNEMOTRON_BACKEND=api`. Never commit keys. If the CLI backend reports an
+authentication or credit error even though you are logged in, check that an
+unrelated `ANTHROPIC_API_KEY` is not being used (the CLI backend strips it by
+default; see `AUTHENTICATION.md`).
 
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-```
-
-For a permanent setting, add the export to `~/.zprofile` (macOS/zsh) or
-`~/.bashrc` (Linux/bash).
-
-This key is required for:
+A Claude backend is needed for:
 - Handwritten document transcription (all pages)
 - Print OCR pages where Tesseract quality is too low
 - Any page in a document where the Tesseract pre-flight fails
+- Summaries (`build_index.py --use-api`) and the task document itself
 
 ### `ia: command not found` or `ia_ingest.py` errors
 
@@ -797,7 +926,7 @@ it was processed, its hash will differ and it will appear unprocessed. This is
 intentional — a changed file is treated as new content.
 
 If you want to suppress a file without reprocessing it, move it to
-`ingest/failed/` (it will be excluded from future scans) or delete it.
+`raw_ingest/failed/` (it will be excluded from future scans) or delete it.
 
 ### The ingest task created a source page but the content looks wrong
 
@@ -809,31 +938,27 @@ garbled from OCR:
    and inspect the raw output.
 3. If quality is poor, increase thresholds (see above) or add `--hint
    handwritten` if the scan is difficult print.
-4. Delete the bad source page, move the original file back to `ingest/`, and
+4. Delete the bad source page, move the original file back to `raw_ingest/`, and
    re-run the ingest task.
 
 ---
 
 ## 12. License
 
-**Code** (`scripts/*.py`, `batch_ingest.py`, `ia_ingest.py`,
-`synthesize_links.py`, `setup.sh`):  
-Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS.  
-Licensed under the GNU General Public License, version 3 or any later version.  
-Full text: <https://www.gnu.org/licenses/gpl-3.0.html>
+Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS.
 
-**This document and other documentation files**:  
-Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS.  
-Licensed under the GNU Free Documentation License, version 1.3 or any later
-version, with no Invariant Sections, no Front-Cover Texts, and no Back-Cover
-Texts.  
-Full text: <https://www.gnu.org/licenses/fdl.html>
+| What | License |
+|------|---------|
+| **Code** (`scripts/*.py`, `batch_ingest.py`, `ia_ingest.py`, `synthesize_links.py`, `wiki_export.py`, `setup.sh`) | GPL-3.0-or-later |
+| **Claude instructions** (`RESEARCH_WIKI_TASK.md`) | GPL-3.0-or-later |
+| **Documentation** (this README, `AUTHENTICATION.md`, `NOTICE.md`) | GFDL-1.3-or-later, no Invariant Sections, Front-Cover Texts or Back-Cover Texts |
+| **Wiki content** you generate (`wiki/`) | Yours; this project sets no license on it |
 
-**Claude instruction documents** (`RESEARCH_WIKI_TASK.md` and similar):  
-Dedicated to the public domain under CC0 1.0 Universal.  
-Full text: <https://creativecommons.org/publicdomain/zero/1.0/>
+Full texts are in [`LICENSES/`](LICENSES/); the summary is in [`LICENSE`](LICENSE).
+Third-party components are listed in [`NOTICE.md`](NOTICE.md).
 
-**Wiki content** (`wiki/`):  
-Copyright belongs to the wiki's author(s). The default license for wiki
-content created by users of this tool is not set by this project; apply
-whichever license is appropriate to your research context.
+**AI assistance notice.** This software and documentation were created with
+assistance from Claude Code (Claude Sonnet 5.5) and may not have been fully
+reviewed by a human. No warranty. Test in your own environment, review what
+Claude writes into your wiki, and take care with sensitive material: content you
+ingest is sent to Anthropic's services when you use either backend.

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Mnemotron Wiki — batch_ingest.py
-# Originally developed by Patrick R. Wallace, Hamilton College LITS.
-# Licensed under the GNU General Public License v3 or later.
-# See <https://www.gnu.org/licenses/gpl-3.0.html>.
+# Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+# This file is part of Mnemotron Wiki. See LICENSE for terms.
+#
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human; test it in your
+# own environment before relying on it.
 
 """
 batch_ingest.py — Bulk ingest runner for this wiki instance.
 
-Processes all unprocessed files in ingest/ and creates wiki/sources/ pages.
+Processes all unprocessed files in raw_ingest/ and creates wiki/sources/ pages.
 Does NOT delete original files.  Saves manifest after each file so a partial
 run can be resumed safely.
 
@@ -35,9 +37,11 @@ from pathlib import Path
 WIKI_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(WIKI_ROOT))
 
+from scripts.config import IMAGE_EXTENSIONS
 from scripts.extract_text import extract_text
 from scripts.manifest import load_manifest, mark_processed, save_manifest
 from scripts.check_ingest import get_ingest_files
+from scripts.locking import atomic_write_text
 
 TODAY = date.today().isoformat()
 
@@ -185,6 +189,9 @@ def _ingest_one(
     dry_run: bool,
 ) -> tuple:
     """Ingest one file. Returns (success, message)."""
+    if dry_run and filepath.suffix.lower() in IMAGE_EXTENSIONS:
+        # Images go through OCR and may need a Claude Vision call; a dry run makes none.
+        return True, "(dry-run) image: would OCR / transcribe (not run)"
     result = extract_text(filepath)
     if result["error"]:
         return False, f"extraction error: {result['error']}"
@@ -196,7 +203,7 @@ def _ingest_one(
     wiki_page = sources_dir / f"{slug}.md"
 
     if not dry_run:
-        wiki_page.write_text(page_content, encoding="utf-8")
+        atomic_write_text(wiki_page, page_content)
         mark_processed(filepath, wiki_page, manifest)
         # Save manifest after every file so a crash loses at most one entry.
         save_manifest(manifest)
@@ -227,7 +234,7 @@ def main() -> None:
     files = get_ingest_files()
 
     if not files:
-        print("No unprocessed files found in ingest/.")
+        print("No unprocessed files found in raw_ingest/.")
         return
 
     if args.limit:

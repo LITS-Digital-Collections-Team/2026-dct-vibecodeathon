@@ -1,12 +1,38 @@
 #!/usr/bin/env bash
-# setup.sh — One-time initialization for Mnemotron Wiki for Research.
-# Run this once from the wiki root after cloning or creating the project.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+# This file is part of Mnemotron Wiki. See LICENSE for terms.
+#
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human; test it in your
+# own environment before relying on it.
+#
+# setup.sh — One-time initialization for Mnemotron Wiki (research tool).
+#
+# Run it from anywhere; it works on the folder that contains this file:
+#
+#     bash setup.sh
+#
+# What it does:
+#   1. Creates raw_ingest/ (the drop zone) and raw_ingest/failed/
+#   2. Creates the wiki/ folders: wiki/sources  wiki/topics  wiki/entities
+#   3. Initializes a git repository if there is none
+#   4. Installs the Python dependencies (pip install -r scripts/requirements.txt)
+#   5. Checks for Tesseract and poppler (warns only)
+#   6. Checks which Claude backend is usable and prints guidance
+#
+# It never reads, writes, or asks for credentials.
+#
+# Environment:
+#   PYTHON=python3        interpreter to use (default: python3)
+#   SKIP_PIP=1            skip the pip install step
 
 set -euo pipefail
-WIKI_ROOT="$(cd "$(dirname "$0")" && pwd)"
+WIKI_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$WIKI_ROOT"
+PYTHON="${PYTHON:-python3}"
 
-echo "=== Mnemotron Wiki for Research — Setup ==="
+echo "=== Mnemotron Wiki — Setup ==="
 echo "Wiki root: $WIKI_ROOT"
 echo
 
@@ -15,18 +41,24 @@ echo
 # ---------------------------------------------------------------------------
 
 echo "Creating directories..."
-mkdir -p ingest/failed
+mkdir -p raw_ingest/failed
 mkdir -p wiki/sources wiki/topics wiki/entities
-echo "  OK"
+touch raw_ingest/.gitkeep raw_ingest/failed/.gitkeep
+echo "  OK  (drop files into raw_ingest/; failures are quarantined in raw_ingest/failed/)"
 
 # ---------------------------------------------------------------------------
 # Git
 # ---------------------------------------------------------------------------
 
+echo
 if [ ! -d ".git" ]; then
-  echo "Initializing git repository..."
-  git init
-  echo "  OK"
+  if command -v git &>/dev/null; then
+    echo "Initializing git repository..."
+    git init
+    echo "  OK"
+  else
+    echo "git not found — skipping repository init (install git to version the wiki)."
+  fi
 else
   echo "Git repository already exists — skipping init."
 fi
@@ -36,37 +68,80 @@ fi
 # ---------------------------------------------------------------------------
 
 echo
-echo "Installing Python dependencies..."
-pip install -r scripts/requirements.txt
-echo "  OK"
+if ! command -v "$PYTHON" &>/dev/null; then
+  echo "ERROR: $PYTHON not found. Install Python 3.9+ or set PYTHON=/path/to/python." >&2
+  exit 1
+fi
+if [ "${SKIP_PIP:-0}" = "1" ]; then
+  echo "SKIP_PIP=1 — skipping Python dependency install."
+else
+  echo "Installing Python dependencies..."
+  "$PYTHON" -m pip install -r scripts/requirements.txt
+  echo "  OK"
+fi
 
 # ---------------------------------------------------------------------------
 # System dependency checks (warn only — do not fail)
 # ---------------------------------------------------------------------------
 
 echo
-echo "Checking system dependencies..."
+echo "Checking system dependencies (optional, needed for scans/images)..."
 
-# Tesseract OCR
 if command -v tesseract &>/dev/null; then
-  echo "  tesseract: $(tesseract --version 2>&1 | head -1)  ✓"
+  echo "  tesseract: $(tesseract --version 2>&1 | head -1)  [ok]"
 else
   echo "  tesseract: NOT FOUND"
-  echo "    → Install with:  brew install tesseract"
-  echo "    → Without Tesseract, all OCR will fall back to Claude Vision (API costs apply)."
+  echo "    -> macOS: brew install tesseract   Debian/Ubuntu: sudo apt install tesseract-ocr"
+  echo "    -> Without Tesseract, OCR falls back to Claude vision for every page."
 fi
 
-# poppler (required by pdf2image)
 if command -v pdftoppm &>/dev/null; then
-  echo "  poppler (pdftoppm): found  ✓"
+  echo "  poppler (pdftoppm): found  [ok]"
 else
   echo "  poppler: NOT FOUND"
-  echo "    → Install with:  brew install poppler"
-  echo "    → Without poppler, scanned PDF processing will not work."
+  echo "    -> macOS: brew install poppler   Debian/Ubuntu: sudo apt install poppler-utils"
+  echo "    -> Without poppler, scanned PDFs cannot be rasterized for OCR."
 fi
 
 # ---------------------------------------------------------------------------
-# Claude project permissions (required for background synthesis agents)
+# Claude backend check (no credentials are read or written)
+# ---------------------------------------------------------------------------
+
+echo
+echo "Checking Claude backends used by the helper scripts (scripts/llm.py)..."
+HAVE_CLI=0
+HAVE_KEY=0
+if command -v claude &>/dev/null; then
+  HAVE_CLI=1
+  echo "  claude CLI: found on PATH  [ok]"
+else
+  echo "  claude CLI: not found"
+fi
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  HAVE_KEY=1
+  echo "  ANTHROPIC_API_KEY: set in this shell  [ok]"
+else
+  echo "  ANTHROPIC_API_KEY: not set"
+fi
+
+if [ "$HAVE_CLI" = "1" ]; then
+  echo "  -> Default backend: the headless Claude Code CLI (MNEMOTRON_BACKEND=cli)."
+  echo "     It uses whatever login the CLI already has; no API key needed."
+elif [ "$HAVE_KEY" = "1" ]; then
+  echo "  -> Default backend: the Anthropic API (MNEMOTRON_BACKEND=api)."
+  echo "     Requires the optional SDK:  $PYTHON -m pip install anthropic"
+else
+  echo "  -> No LLM backend is available yet. Pick one:"
+  echo "       a) Install Claude Code (https://claude.com/claude-code) and sign in, or"
+  echo "       b) export ANTHROPIC_API_KEY in your shell and run:"
+  echo "            $PYTHON -m pip install anthropic"
+  echo "            export MNEMOTRON_BACKEND=api"
+  echo "     Scripts that do not call an LLM (check_ingest, build_index without"
+  echo "     --use-api, wiki_export, ...) work either way."
+fi
+
+# ---------------------------------------------------------------------------
+# Claude project permissions (lets background agents edit wiki files)
 # ---------------------------------------------------------------------------
 
 if [ ! -f ".claude/settings.json" ]; then
@@ -84,14 +159,22 @@ if [ ! -f ".claude/settings.json" ]; then
       "Bash(git status*)",
       "Bash(git log*)",
       "Bash(wc*)",
-      "Bash(ls*)"
+      "Bash(ls*)",
+      "Bash(python scripts/*)",
+      "Bash(python3 scripts/*)",
+      "Bash(python batch_ingest.py*)",
+      "Bash(python3 batch_ingest.py*)",
+      "Bash(python ia_ingest.py*)",
+      "Bash(python3 ia_ingest.py*)",
+      "Bash(python3 synthesize_links.py*)",
+      "Bash(python3 wiki_export.py*)"
     ]
   }
 }
 EOF
-  echo "Created .claude/settings.json  (enables background agents to edit wiki files)"
-else
-  echo ".claude/settings.json already exists — skipping."
+  echo
+  echo "Created .claude/settings.json  (lets Claude agents edit wiki files and run the helper scripts)"
+  echo "  Review it before use; delete it if you prefer to approve each action."
 fi
 
 # ---------------------------------------------------------------------------
@@ -115,7 +198,7 @@ if [ ! -f "wiki/INDEX.md" ]; then
 updated: $DATE
 ---
 
-# Research Wiki Index
+# Wiki Index
 
 *Index will be populated automatically by the ingest task.*
 EOF
@@ -130,12 +213,10 @@ echo
 echo "=== Setup complete ==="
 echo
 echo "Next steps:"
-echo "  1. Drop documents into ingest/"
-echo "  2. Run the ingest task:  tell Claude 'run the research wiki ingest task'"
-echo "     (Claude reads RESEARCH_WIKI_TASK.md for instructions)"
-echo "  3. For scanned PDFs or image files, ensure Tesseract and poppler are"
-echo "     installed, and set ANTHROPIC_API_KEY for the Claude Vision fallback."
-echo "  4. To export the wiki to static HTML:"
-echo "       python wiki_export.py"
-echo "     Output goes to wiki-export/index.html  (no server needed)."
+echo "  1. Drop documents into raw_ingest/"
+echo "  2. See which files are waiting:   $PYTHON scripts/check_ingest.py"
+echo "  3. Tell Claude to run the ingest task described in RESEARCH_WIKI_TASK.md"
+echo "  4. Check your Claude backend:     $PYTHON scripts/check_auth.py   (see AUTHENTICATION.md)"
+echo "  5. To export the wiki to static HTML:"
+echo "       $PYTHON wiki_export.py     (output: wiki-export/index.html)"
 echo

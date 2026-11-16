@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Mnemotron Wiki — scripts/open_questions.py
-# Originally developed by Patrick R. Wallace, Hamilton College LITS.
-# Licensed under the GNU General Public License v3 or later.
-# See <https://www.gnu.org/licenses/gpl-3.0.html>.
+# Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+# This file is part of Mnemotron Wiki. See LICENSE for terms.
+#
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human; test it in your
+# own environment before relying on it.
 
 """
 open_questions.py — Regenerate wiki/OPEN-QUESTIONS.md from all topic pages.
@@ -28,6 +30,8 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.locking import atomic_write_text
 
 WIKI_ROOT  = Path(__file__).resolve().parent.parent
 TOPICS_DIR = WIKI_ROOT / "wiki" / "topics"
@@ -152,7 +156,7 @@ def main() -> None:
         print(content)
         return
 
-    OQ_PATH.write_text(content, encoding="utf-8")
+    atomic_write_text(OQ_PATH, content)
     total = sum(len(qs) for _, _, qs in data)
     print(f"Wrote {OQ_PATH.relative_to(WIKI_ROOT)} "
           f"({total} questions, {len(data)} topics)")

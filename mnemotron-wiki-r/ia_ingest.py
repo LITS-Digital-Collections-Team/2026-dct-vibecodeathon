@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Mnemotron Wiki — ia_ingest.py
-# Originally developed by Patrick R. Wallace, Hamilton College LITS.
-# Licensed under the GNU General Public License v3 or later.
-# See <https://www.gnu.org/licenses/gpl-3.0.html>.
+# Copyright (C) 2026 Patrick R. Wallace, Hamilton College LITS
+# This file is part of Mnemotron Wiki. See LICENSE for terms.
+#
+# AI ASSISTANCE NOTICE: Created with assistance from Claude Code (Claude
+# Sonnet 5.5). It may not have been fully reviewed by a human; test it in your
+# own environment before relying on it.
 
 """
 ia_ingest.py — Fetch and ingest documents from Internet Archive.
 
 Reads a CSV of IA identifiers and ingests each item into wiki/sources/:
 
-  1. Skip identifiers already recorded in ingest/ia-sources/processed.json.
+  1. Skip identifiers already recorded in raw_ingest/ia-sources/processed.json.
   2. Fetch IA metadata via `ia metadata`; verify mediatype == "texts".
   3. Download *_djvu.txt — IA's pre-built Tesseract OCR text (fast, ~100–400 KB).
   4. Evaluate OCR quality:
@@ -28,7 +30,7 @@ Reads a CSV of IA identifiers and ingests each item into wiki/sources/:
 
 Processed log
 -------------
-ingest/ia-sources/processed.json tracks all IA identifiers that have been
+raw_ingest/ia-sources/processed.json tracks all IA identifiers that have been
 successfully ingested. It is separate from the content-hash-based .manifest.json
 because IA items are identified by their item identifier, not a local file hash.
 
@@ -64,7 +66,8 @@ from typing import Optional
 WIKI_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(WIKI_ROOT))
 
-from scripts.config import SOURCES_DIR
+from scripts.config import SOURCES_DIR, RAW_INGEST_DIR
+from scripts.locking import atomic_write_text, read_json, merge_save_json
 from batch_ingest import make_slug, _build_page
 
 TODAY = date.today().isoformat()
@@ -87,7 +90,7 @@ DJVU_DOWNLOAD_TIMEOUT = 120   # djvu.txt files are small
 PDF_DOWNLOAD_TIMEOUT  = 600   # original image PDFs can be 50–100 MB
 
 # Paths
-IA_SOURCES_DIR = WIKI_ROOT / "ingest" / "ia-sources"
+IA_SOURCES_DIR = RAW_INGEST_DIR / "ia-sources"
 PROCESSED_LOG  = IA_SOURCES_DIR / "processed.json"
 DEFAULT_CSV    = IA_SOURCES_DIR / "search.csv"
 
@@ -98,17 +101,15 @@ DEFAULT_CSV    = IA_SOURCES_DIR / "search.csv"
 
 def _load_log() -> dict:
     """Load the IA processed log.  Returns {} if the file does not yet exist."""
-    if not PROCESSED_LOG.exists():
-        return {}
-    with open(PROCESSED_LOG, "r", encoding="utf-8") as f:
-        return json.load(f)
+    data = read_json(PROCESSED_LOG, {})
+    return data if isinstance(data, dict) else {}
 
 
 def _save_log(log: dict) -> None:
     """Persist the IA processed log to disk."""
     PROCESSED_LOG.parent.mkdir(parents=True, exist_ok=True)
-    with open(PROCESSED_LOG, "w", encoding="utf-8") as f:
-        json.dump(log, f, indent=2, ensure_ascii=False)
+    # Locked, atomic merge: concurrent runs never drop each other's entries.
+    merge_save_json(PROCESSED_LOG, log, indent=2, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +324,7 @@ def _write_source_page(
     wiki_page = sources_dir / f"{slug}.md"
 
     if not dry_run:
-        wiki_page.write_text(page_content, encoding="utf-8")
+        atomic_write_text(wiki_page, page_content)
 
     return str(wiki_page.relative_to(WIKI_ROOT))
 
@@ -633,7 +634,7 @@ def main() -> None:
             print(f"  {ident}: {err}")
     if not args.dry_run and success_count:
         print(
-            f"\nNext: run 'git add wiki/sources/ ingest/ia-sources/processed.json && "
+            f"\nNext: run 'git add wiki/sources/ raw_ingest/ia-sources/processed.json && "
             f"git commit' to save the new source pages."
         )
 
